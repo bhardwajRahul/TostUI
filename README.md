@@ -12,6 +12,7 @@
 
 | Local | Info
 | --- | --- |
+[![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/tostui?tab=readme-ov-file#-tostui---z-image-turbo-4bit) | TostUI - Z-Image-Turbo (4bit)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/tostui?tab=readme-ov-file#-tostui---qwen-image-edit-2509-with-loras-8bit) | TostUI - Qwen Image Edit 2509 with LoRAs (8bit)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/tostui?tab=readme-ov-file#-tostui---z-image-turbo-with-upscaler-8bit) | TostUI - Z-Image-Turbo with Upscaler (8bit)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/tostui?tab=readme-ov-file#-tostui---wan-22-image-to-video-8bit) | TostUI - Wan 2.2 Image to Video (8bit)
