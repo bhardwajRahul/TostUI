@@ -8,9 +8,9 @@
 
 ![Image](https://github.com/user-attachments/assets/594d9c1c-d652-4c5c-9ace-b4d7c08668ba)
 
-### 🏠 Local and 🍇 RunPod Templates (All pods and serverless tested with RTX 3090)
+### 🏠 Local and 🍇 RunPod Templates
 
-| Local | Pod | Serverless | Info
+| Local | Pod | Serverless | Info (All pods and serverless tested with RTX 3090)
 | --- | --- | --- | --- |
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/tostui?tab=readme-ov-file#-tostui---z-image-turbo-4bit) | | | TostUI - Z-Image-Turbo (4bit)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/tostui?tab=readme-ov-file#-tostui---qwen-image-edit-2509-with-loras-8bit) | [![pod](https://github.com/user-attachments/assets/b1afe627-76ad-42fd-baaa-59be2259b224)](https://console.runpod.io/deploy?template=zbpfw59j23&ref=iqi9iy8y) | [![serverless](https://github.com/user-attachments/assets/99241dcd-7d87-4140-a779-d775bbbd674c)](https://console.runpod.io/deploy?template=kav9oydwre&ref=iqi9iy8y) | TostUI - Qwen Image Edit 2509 with LoRAs (8bit)
