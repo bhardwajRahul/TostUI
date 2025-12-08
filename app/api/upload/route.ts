@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { randomUUID } from "crypto"
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,7 +14,8 @@ export async function POST(request: NextRequest) {
 
     if (useLocal) {
       // Upload to local MinIO
-      const filename = `upload-${Date.now()}-${file.name}`
+      const ext = file.name.split('.').pop()
+      const filename = `${randomUUID()}.${ext}`
       const minioUrl = `${localUploadUrl}/tost/${filename}`
 
       const response = await fetch(minioUrl, {
@@ -32,19 +34,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ url })
     } else {
       // Upload to TostAI
-      const uploadFormData = new FormData()
-      uploadFormData.append("file", file)
+      const ext = file.name.split('.').pop()
+      const filename = `${randomUUID()}.${ext}`
+      const baseUrl = process.env.TOST_AI_S3_BASE_URL || "https://s3.tost.ai/tost"
+      const IOUrl = `${baseUrl}/${filename}`
 
-      const response = await fetch("https://upload.tost.ai/api/v1", {
-        method: "POST",
-        body: uploadFormData,
+      const response = await fetch(IOUrl, {
+        method: "PUT",
+        body: file,
+        headers: {
+          "Content-Type": file.type || "application/octet-stream",
+        },
       })
 
       if (!response.ok) {
         throw new Error(`Upload failed: ${response.status} ${response.statusText}`)
       }
 
-      const url = await response.text()
+      const url = `${IOUrl}`
       return NextResponse.json({ url })
     }
   } catch (error) {

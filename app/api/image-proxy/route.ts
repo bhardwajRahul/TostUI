@@ -8,16 +8,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "No URL provided" }, { status: 400 })
     }
 
-    // Only allow URLs from trusted domains unless local=true
-    const local = request.nextUrl.searchParams.get("local") === "true"
-    if (!local) {
-      const allowedDomains = ['s3.tost.ai']
-      const urlObj = new URL(url)
-
-      if (!allowedDomains.some(domain => urlObj.hostname === domain || urlObj.hostname.endsWith('.' + domain))) {
-        return NextResponse.json({ error: "URL not allowed" }, { status: 403 })
-      }
-    }
+    // Allow all URLs
 
     const response = await fetch(url, {
       headers: {
