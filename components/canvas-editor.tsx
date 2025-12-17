@@ -12,13 +12,14 @@ declare global {
         debug?: boolean
         style?: React.CSSProperties
         onError?: (e: Event) => void
+        onLoad?: () => void
       }
     }
   }
 }
 
 import React from "react"
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -78,8 +79,8 @@ import {
   Earth,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { GLBPreview } from "./glb-preview"
 import { ThemeToggle } from "./theme-toggle"
+import { GLBViewerWindow } from "./glb-viewer-window"
 import { useTheme } from 'next-themes'
 import dynamic from 'next/dynamic'
 import { AutoModel, AutoProcessor, RawImage } from '@huggingface/transformers'
@@ -102,45 +103,49 @@ import { loadAiServices, getCategoryColor, getCategoryIcon, type AIService } fro
 // Local API allowed services
 const TOST_UI_LOCAL_API_SERVICES = process.env.NEXT_PUBLIC_TOST_UI_LOCAL_API_SERVICES ? process.env.NEXT_PUBLIC_TOST_UI_LOCAL_API_SERVICES.split(',') : []
 
-type LayerType = 'image' | 'text' | 'video'
+type LayerType = 'image' | 'text' | 'video' | 'glb'
 
 interface Layer {
-   id: string
-   type: LayerType
-   // For image layers
-   image?: HTMLImageElement
-   // For text layers
-   text?: string
-   fontSize?: number
-   fontFamily?: string
-   color?: string
-   // For video layers
-   video?: HTMLVideoElement
-   videoUrl?: string
-   currentTime?: number
-   duration?: number
-   isPlaying?: boolean
-   // For AI-generated layers
-   delayTime?: number
-   executionTime?: number
-   prompt?: string
-   instruction?: string
-   resultUrl?: string
-   serviceId?: string
-   // Billing information
-   billing?: {
-     costPerSecond: number
-     deducted: number
-     remaining: number
-   }
-   x: number
-   y: number
-   width: number
-   height: number
-   rotation: number
-   name: string
-   visible: boolean
- }
+    id: string
+    type: LayerType
+    // For image layers
+    image?: HTMLImageElement
+    // For text layers
+    text?: string
+    fontSize?: number
+    fontFamily?: string
+    color?: string
+    // For video layers
+    video?: HTMLVideoElement
+    videoUrl?: string
+    currentTime?: number
+    duration?: number
+    isPlaying?: boolean
+    // For GLB layers
+    glbUrl?: string
+    // For GLB thumbnails
+    isGlbThumbnail?: boolean
+    // For AI-generated layers
+    delayTime?: number
+    executionTime?: number
+    prompt?: string
+    instruction?: string
+    resultUrl?: string
+    serviceId?: string
+    // Billing information
+    billing?: {
+      costPerSecond: number
+      deducted: number
+      remaining: number
+    }
+    x: number
+    y: number
+    width: number
+    height: number
+    rotation: number
+    name: string
+    visible: boolean
+  }
 
 interface ConversionOptions {
   prompt: string
@@ -219,9 +224,6 @@ export function CanvasEditor() {
 
   const [isDuplicating, setIsDuplicating] = useState(false)
 
-  const [showGLBPreview, setShowGLBPreview] = useState(false)
-  const [currentGLBFile, setCurrentGLBFile] = useState<File | null>(null)
-
   // Touch handling state
   const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null)
   const [lastTouchDistance, setLastTouchDistance] = useState<number | null>(null)
@@ -278,6 +280,132 @@ export function CanvasEditor() {
   const lastDrawTime = useRef<number>(0)
   const isSeekingRef = useRef<Record<string, boolean>>({})
   const [sliderValues, setSliderValues] = useState<Record<string, number>>({})
+  const [dragDelta, setDragDelta] = useState({ x: 0, y: 0 })
+
+  // Track processed GLB URLs to prevent duplicate thumbnail generation
+  const processedGlbUrls = useRef<Set<string>>(new Set())
+
+  // GLB viewer state
+  const [showGlbViewer, setShowGlbViewer] = useState(false)
+  const [currentGlbUrl, setCurrentGlbUrl] = useState<string | null>(null)
+  const [currentGlbTitle, setCurrentGlbTitle] = useState<string>("")
+  const [currentGlbPosition, setCurrentGlbPosition] = useState<{ x: number; y: number }>({ x: 100, y: 100 })
+  const [currentGlbSize, setCurrentGlbSize] = useState<{ width: number; height: number }>({ width: 600, height: 500 })
+
+  // Function to generate GLB thumbnail
+  const generateGLBThumbnail = useCallback(async (glbUrl: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      // Create temporary model-viewer
+      const tempDiv = document.createElement('div')
+      tempDiv.style.position = 'absolute'
+      tempDiv.style.left = '0'
+      tempDiv.style.top = '0'
+      tempDiv.style.width = '800px'
+      tempDiv.style.height = '600px'
+      tempDiv.style.opacity = '0'
+      tempDiv.style.pointerEvents = 'none'
+      tempDiv.style.zIndex = '-1'
+      document.body.appendChild(tempDiv)
+
+      const modelViewer = document.createElement('model-viewer')
+      modelViewer.src = glbUrl
+      modelViewer.style.width = '100%'
+      modelViewer.style.height = '100%'
+      modelViewer.style.backgroundColor = 'transparent'
+      modelViewer.setAttribute('camera-controls', 'false')
+      modelViewer.setAttribute('auto-rotate', 'false')
+      tempDiv.appendChild(modelViewer)
+
+      const cleanup = () => {
+        if (tempDiv.parentNode) {
+          document.body.removeChild(tempDiv)
+        }
+      }
+
+      modelViewer.addEventListener('load', async () => {
+        try {
+          // Wait a bit for rendering
+          await new Promise(resolve => setTimeout(resolve, 2000))
+
+          const blob = await modelViewer.toBlob({
+            mimeType: 'image/png'
+          })
+
+          if (blob) {
+            const img = document.createElement('img')
+            img.onload = () => {
+              cleanup()
+              resolve(img)
+            }
+            img.onerror = () => {
+              cleanup()
+              reject(new Error('Failed to load thumbnail'))
+            }
+            img.src = URL.createObjectURL(blob)
+          } else {
+            cleanup()
+            reject(new Error('Failed to capture GLB'))
+          }
+        } catch (error) {
+          cleanup()
+          reject(error)
+        }
+      })
+
+      modelViewer.addEventListener('error', (e) => {
+        cleanup()
+        reject(new Error('Failed to load GLB'))
+      })
+
+      // Timeout after 10 seconds
+      setTimeout(() => {
+        cleanup()
+        reject(new Error('Timeout generating thumbnail'))
+      }, 10000)
+    })
+  }, [])
+
+  // Generate thumbnails for GLB layers automatically
+  useEffect(() => {
+    const generateThumbnails = async () => {
+      const glbLayers = layers.filter(layer =>
+        layer.type === 'glb' &&
+        layer.glbUrl &&
+        !processedGlbUrls.current.has(layer.glbUrl)
+      )
+      if (glbLayers.length === 0) return
+
+      for (const layer of glbLayers) {
+        processedGlbUrls.current.add(layer.glbUrl!)
+        try {
+          const thumbnail = await generateGLBThumbnail(layer.glbUrl!)
+          const croppedThumbnail = await cropTransparent(thumbnail)
+          // Create a new image layer for the thumbnail
+          const thumbnailLayer: Layer = {
+            id: `layer-glb-thumb-${Date.now()}-${Math.random()}`,
+            type: 'image',
+            image: croppedThumbnail,
+            x: layer.x + layer.width + 20, // Position next to the GLB layer
+            y: layer.y,
+            width: croppedThumbnail.width,
+            height: croppedThumbnail.height,
+            rotation: 0,
+            name: `${layer.name} Thumbnail`,
+            visible: true,
+            isGlbThumbnail: true,
+            glbUrl: layer.glbUrl,
+          }
+          setLayers(prev => [...prev, thumbnailLayer])
+        } catch (error) {
+          console.error('Failed to generate GLB thumbnail:', error)
+          // Remove from processed if failed, so it can retry
+          processedGlbUrls.current.delete(layer.glbUrl!)
+        }
+      }
+    }
+
+    generateThumbnails()
+  }, [layers, generateGLBThumbnail])
 
   // Service Properties resize functionality
   const [servicePropertiesHeight, setServicePropertiesHeight] = useState(128) // Default height in pixels
@@ -576,6 +704,12 @@ export function CanvasEditor() {
     document.documentElement.style.fontSize = `${uiScale}%`
   }, [uiScale])
 
+  // Ensure model-viewer library is loaded for GLB thumbnail generation
+  useEffect(() => {
+    import('@google/model-viewer')
+  }, [])
+
+
   // Clear selected service when switching API modes
   useEffect(() => {
     setSelectedServiceId(null)
@@ -759,8 +893,7 @@ export function CanvasEditor() {
      const visibleLayers = layers.filter(layer => layer.visible && (
        (layer.type === 'image' && layer.image && layer.image.complete) ||
        (layer.type === 'text' && layer.text) ||
-       (layer.type === 'video' && layer.video) ||
-       layer.name.includes('GLB')
+       (layer.type === 'video' && layer.video)
      ))
 
     visibleLayers.forEach((layer) => {
@@ -779,6 +912,8 @@ export function CanvasEditor() {
           ctx.fillText(layer.text, 0, 0)
         } else if (layer.type === 'video' && layer.video) {
           ctx.drawImage(layer.video, -layer.width / 2, -layer.height / 2, layer.width, layer.height)
+        } else if (layer.type === 'glb' && layer.image) {
+          ctx.drawImage(layer.image, -layer.width / 2, -layer.height / 2, layer.width, layer.height)
         }
 
         ctx.restore()
@@ -788,7 +923,7 @@ export function CanvasEditor() {
     })
 
     if (!hideSelection && selectedLayers.length > 0) {
-      selectedLayers.forEach((layer) => {
+      selectedLayers.filter(layer => layer.type !== 'glb').forEach((layer) => {
         ctx.save()
         ctx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2)
         ctx.rotate((layer.rotation * Math.PI) / 180)
@@ -899,11 +1034,12 @@ export function CanvasEditor() {
   }
 
   const handleLayerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-     const files = e.target.files
-     if (!files) return
+      const files = e.target.files
+      if (!files) return
 
-     const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'))
-     const videoFiles = Array.from(files).filter(file => file.type.startsWith('video/'))
+      const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'))
+      const videoFiles = Array.from(files).filter(file => file.type.startsWith('video/'))
+      const glbFiles = Array.from(files).filter(file => file.name.toLowerCase().endsWith('.glb') || file.name.toLowerCase().endsWith('.gltf'))
 
      // Handle video files
      if (videoFiles.length > 0) {
@@ -1004,6 +1140,86 @@ export function CanvasEditor() {
        saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
      }
 
+     // Handle GLB files
+     if (glbFiles.length > 0) {
+       const canvas = canvasRef.current
+       if (!canvas) return
+
+       // Calculate center position of the visible canvas area
+       const rect = canvas.getBoundingClientRect()
+       const centerX = (rect.width / 2 - pan.x) / zoom
+       const centerY = (rect.height / 2 - pan.y) / zoom
+
+       const newLayers: Layer[] = []
+       for (let i = 0; i < glbFiles.length; i++) {
+         const file = glbFiles[i]
+         const glbUrl = URL.createObjectURL(file)
+
+         try {
+           const thumbnail = await generateGLBThumbnail(glbUrl)
+           const croppedThumbnail = await cropTransparent(thumbnail)
+
+           // Calculate dimensions maintaining aspect ratio, with max dimension if enabled
+           const aspectRatio = croppedThumbnail.width / croppedThumbnail.height
+
+           let width: number, height: number
+           if (maxDimensionEnabled) {
+             if (croppedThumbnail.width > croppedThumbnail.height) {
+               // Landscape thumbnail
+               width = Math.min(croppedThumbnail.width, maxDimension)
+               height = width / aspectRatio
+             } else {
+               // Portrait or square thumbnail
+               height = Math.min(croppedThumbnail.height, maxDimension)
+               width = height * aspectRatio
+             }
+           } else {
+             // Use original dimensions
+             width = croppedThumbnail.width
+             height = croppedThumbnail.height
+           }
+
+           // Ensure they are divisible by 4
+           width = Math.ceil(width / 4) * 4
+           height = Math.ceil(height / 4) * 4
+
+           // Arrange thumbnails in a grid pattern around the center
+           const cols = Math.ceil(Math.sqrt(glbFiles.length))
+           const rows = Math.ceil(glbFiles.length / cols)
+           const colIndex = i % cols
+           const rowIndex = Math.floor(i / cols)
+
+           const spacing = 320 // Space between thumbnails
+           const offsetX = (colIndex - (cols - 1) / 2) * spacing
+           const offsetY = (rowIndex - (rows - 1) / 2) * spacing
+
+           const newLayer: Layer = {
+             id: `layer-glb-thumb-${Date.now()}-${i}`,
+             type: 'image',
+             image: croppedThumbnail,
+             x: centerX - width / 2 + offsetX,
+             y: centerY - height / 2 + offsetY,
+             width,
+             height,
+             rotation: 0,
+             name: `${file.name} Thumbnail`,
+             visible: true,
+           }
+
+           newLayers.push(newLayer)
+         } catch (error) {
+           console.error('Failed to generate GLB thumbnail:', error)
+         }
+       }
+
+       if (newLayers.length > 0) {
+         const updatedLayers = [...layers, ...newLayers]
+         setLayers(updatedLayers)
+         setSelectedLayerIds([newLayers[newLayers.length - 1].id])
+         saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
+       }
+     }
+
      // Handle image files
      if (imageFiles.length > 0) {
       const canvas = canvasRef.current
@@ -1102,6 +1318,7 @@ export function CanvasEditor() {
     const allFiles = Array.from(e.dataTransfer.files)
     const imageFiles = allFiles.filter((file) => file.type.startsWith("image/"))
     const videoFiles = allFiles.filter((file) => file.type.startsWith("video/"))
+    const glbFiles = allFiles.filter((file) => file.name.toLowerCase().endsWith('.glb') || file.name.toLowerCase().endsWith('.gltf'))
 
     // Handle video files
     if (videoFiles.length > 0) {
@@ -1204,6 +1421,89 @@ export function CanvasEditor() {
       saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
     }
 
+    // Handle GLB files
+    if (glbFiles.length > 0) {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      // Calculate center position of the visible canvas area
+      const rect = canvas.getBoundingClientRect()
+      const centerX = (rect.width / 2 - pan.x) / zoom
+      const centerY = (rect.height / 2 - pan.y) / zoom
+
+      const newLayers: Layer[] = []
+      for (let i = 0; i < glbFiles.length; i++) {
+        const file = glbFiles[i]
+        const glbUrl = URL.createObjectURL(file)
+
+        try {
+          const thumbnail = await generateGLBThumbnail(glbUrl)
+          const croppedThumbnail = await cropTransparent(thumbnail)
+
+          // Calculate dimensions maintaining aspect ratio, with max dimension if enabled
+          const aspectRatio = croppedThumbnail.width / croppedThumbnail.height
+
+          let width: number, height: number
+          if (maxDimensionEnabled) {
+            if (croppedThumbnail.width > croppedThumbnail.height) {
+              // Landscape thumbnail
+              width = Math.min(croppedThumbnail.width, maxDimension)
+              height = width / aspectRatio
+            } else {
+              // Portrait or square thumbnail
+              height = Math.min(croppedThumbnail.height, maxDimension)
+              width = height * aspectRatio
+            }
+          } else {
+            // Use original dimensions
+            width = croppedThumbnail.width
+            height = croppedThumbnail.height
+          }
+
+          // Ensure they are divisible by 4
+          width = Math.ceil(width / 4) * 4
+          height = Math.ceil(height / 4) * 4
+
+          // Arrange thumbnails in a grid pattern around the center
+          const cols = Math.ceil(Math.sqrt(glbFiles.length))
+          const rows = Math.ceil(glbFiles.length / cols)
+          const colIndex = i % cols
+          const rowIndex = Math.floor(i / cols)
+
+          const spacing = 320 // Space between thumbnails
+          const offsetX = (colIndex - (cols - 1) / 2) * spacing
+          const offsetY = (rowIndex - (rows - 1) / 2) * spacing
+
+          const newLayer: Layer = {
+            id: `layer-glb-thumb-${Date.now()}-${i}`,
+            type: 'image',
+            image: croppedThumbnail,
+            x: centerX - width / 2 + offsetX,
+            y: centerY - height / 2 + offsetY,
+            width,
+            height,
+            rotation: 0,
+            name: `${file.name} Thumbnail`,
+            visible: true,
+            isGlbThumbnail: true,
+            glbUrl: glbUrl,
+          }
+
+          newLayers.push(newLayer)
+        } catch (error) {
+          console.error('Failed to generate GLB thumbnail:', error)
+        }
+      }
+
+      if (newLayers.length > 0) {
+        const updatedLayers = [...layers, ...newLayers]
+        setLayers(updatedLayers)
+        setSelectedLayerIds([newLayers[newLayers.length - 1].id])
+        saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
+      }
+    }
+
+
     // Handle image files
     if (imageFiles.length > 0) {
       const canvas = canvasRef.current
@@ -1265,11 +1565,6 @@ export function CanvasEditor() {
       setLayers(updatedLayers)
       setSelectedLayerIds([newLayers[newLayers.length - 1].id])
       saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
-
-      // Show timeline panel when video layers are added
-      if (videoFiles.length > 0) {
-        setShowTimelinePanel(true)
-      }
 
       // Show timeline panel when video layers are added
       if (videoFiles.length > 0) {
@@ -1726,17 +2021,7 @@ export function CanvasEditor() {
         const deltaX = x - dragStart.x
         const deltaY = y - dragStart.y
 
-        setLayers((prev) =>
-          prev.map((layer) => {
-            if (selectedLayerIds.includes(layer.id)) {
-              const initial = initialDragPositions[layer.id]
-              if (initial) {
-                return { ...layer, x: initial.x + deltaX, y: initial.y + deltaY }
-              }
-            }
-            return layer
-          })
-        )
+        setDragDelta({ x: deltaX * zoom, y: deltaY * zoom })
       } else if (isResizing && selectedLayerIds.length === 1 && initialLayerState && activeHandle) {
         const layer = initialLayerState
 
@@ -1867,6 +2152,15 @@ export function CanvasEditor() {
       saveToHistory(layers, selectedLayerIds)
     }
 
+    if (isDragging) {
+      setLayers(prev => prev.map(layer => {
+        if (selectedLayerIds.includes(layer.id)) {
+          return { ...layer, x: layer.x + (dragDelta.x / zoom), y: layer.y + (dragDelta.y / zoom) }
+        }
+        return layer
+      }))
+      setDragDelta({ x: 0, y: 0 })
+    }
     setIsDragging(false)
     setIsResizing(false)
     setIsRotating(false)
@@ -1914,17 +2208,26 @@ export function CanvasEditor() {
   }
   
   const exportLayer = (layerId: string) => {
-     const layer = layers.find(l => l.id === layerId)
-     if (!layer) return
+      const layer = layers.find(l => l.id === layerId)
+      if (!layer) return
 
-     if (layer.type === 'video' && layer.videoUrl) {
-       // For video layers, download the video file directly
-       const a = document.createElement("a")
-       a.href = layer.videoUrl
-       a.download = `${layer.name.replace(/\s+/g, '_')}-TostAI-${Date.now()}.mp4`
-       a.click()
-       return
-     }
+      if (layer.type === 'video' && layer.videoUrl) {
+        // For video layers, download the video file directly
+        const a = document.createElement("a")
+        a.href = layer.videoUrl!
+        a.download = `${layer.name.replace(/\s+/g, '_')}-TostAI-${Date.now()}.mp4`
+        a.click()
+        return
+      }
+
+      if (layer.type === 'glb' && layer.glbUrl) {
+        // For GLB layers, download the GLB file directly
+        const a = document.createElement("a")
+        a.href = layer.glbUrl!
+        a.download = `${layer.name.replace(/\s+/g, '_')}-TostAI-${Date.now()}.glb`
+        a.click()
+        return
+      }
 
      const canvas = document.createElement("canvas")
      canvas.width = layer.width
@@ -2115,6 +2418,9 @@ export function CanvasEditor() {
        } else if (layer.type === 'video' && layer.video) {
          // For video layers, copy the current frame as an image
          ctx.drawImage(layer.video, 0, 0, layer.width, layer.height)
+       } else if (layer.type === 'glb') {
+         // GLB layers cannot be copied to clipboard as images
+         return
        }
 
        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve))
@@ -2183,6 +2489,7 @@ export function CanvasEditor() {
     setSelectedLayerIds([updatedLayer.id])
     saveToHistory(updatedLayers, [updatedLayer.id])
   }
+
 
   const calculateDimensionsFromAspectRatio = (aspectRatio: string, baseSize: number) => {
     const [widthRatio, heightRatio] = aspectRatio.split(':').map(Number)
@@ -2437,6 +2744,9 @@ export function CanvasEditor() {
                 ctx.fillText(layer.text, 0, layer.fontSize || 24)
               } else if (layer.type === 'video' && layer.video) {
                 ctx.drawImage(layer.video, 0, 0, layer.width, layer.height)
+              } else if (layer.type === 'glb') {
+                // GLB layers are rendered as overlays, so they won't be captured in canvas
+                // Skip GLB layers in canvas capture
               }
 
               const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve))
@@ -2858,81 +3168,6 @@ export function CanvasEditor() {
     })
   }
 
-  const handleGLBThumbnailGenerated = (thumbnail: HTMLImageElement) => {
-    // Ensure the thumbnail image is fully loaded before adding to canvas
-    const addThumbnailToCanvas = async () => {
-      // Crop transparent parts
-      const croppedThumbnail = await cropTransparent(thumbnail)
-
-      // Use larger dimensions for GLB thumbnails (up to maxDimension px height if enabled)
-      const aspectRatio = croppedThumbnail.width / croppedThumbnail.height
-
-      let width: number, height: number
-      if (maxDimensionEnabled) {
-        if (croppedThumbnail.width > croppedThumbnail.height) {
-          // Landscape - fit to max dimension
-          if (croppedThumbnail.width > maxDimension) {
-            width = maxDimension
-            height = width / aspectRatio
-          } else {
-            width = croppedThumbnail.width
-            height = croppedThumbnail.height
-          }
-        } else {
-          // Portrait or square - fit to max dimension height
-          if (croppedThumbnail.height > maxDimension) {
-            height = maxDimension
-            width = height * aspectRatio
-          } else {
-            width = croppedThumbnail.width
-            height = croppedThumbnail.height
-          }
-        }
-      } else {
-        // Use original dimensions
-        width = croppedThumbnail.width
-        height = croppedThumbnail.height
-      }
-
-      const newLayer: Layer = {
-        id: `layer-glb-${Date.now()}`,
-        type: 'image',
-        image: croppedThumbnail,
-        x: 100,
-        y: 100,
-        width: Math.round(width),
-        height: Math.round(height),
-        rotation: 0,
-        name: currentGLBFile?.name || 'GLB Thumbnail',
-        visible: true,
-      }
-
-      const updatedLayers = [...layers, newLayer]
-      setLayers(updatedLayers)
-      setSelectedLayerIds([newLayer.id])
-      saveToHistory(updatedLayers, [newLayer.id])
-
-      // Force canvas redraw by triggering state update
-      setForceRedraw(prev => prev + 1)
-
-      // Additional forced redraws as backup
-      setTimeout(() => setForceRedraw(prev => prev + 1), 50)
-      setTimeout(() => setForceRedraw(prev => prev + 1), 150)
-    }
-
-    // If image is already loaded, add it immediately
-    if (thumbnail.complete && thumbnail.naturalWidth > 0) {
-      addThumbnailToCanvas()
-    } else {
-      // Wait for image to load if not ready yet
-      thumbnail.onload = () => {
-        addThumbnailToCanvas()
-      }
-      thumbnail.onerror = () => {
-        // Failed to load thumbnail - silently continue
-      }
-    }
-  }
 
   const handleServiceResult = async (resultUrl: string, layerName = "AI Generated Content", timing?: { delayTime?: number, executionTime?: number }, prompt?: string, instruction?: string, service?: any, jobId?: string, job?: any, billing?: { costPerSecond: number, deducted: number, remaining: number }) => {
     try {
@@ -3080,6 +3315,106 @@ export function CanvasEditor() {
               } : j))
             }
           })
+      } else if (resultUrl.toLowerCase().endsWith('.glb') || resultUrl.toLowerCase().endsWith('.gltf')) {
+        // Handle GLB result
+        const glbUrl = `/api/image-proxy?url=${encodeURIComponent(resultUrl)}&local=${useLocalApi}`
+
+        // Generate thumbnail for the GLB
+        generateGLBThumbnail(glbUrl).then(async thumbnail => {
+          const croppedThumbnail = await cropTransparent(thumbnail)
+
+          // Use functional update to ensure we have the latest layers state
+          setLayers(currentLayers => {
+            // Find the current input layer by ID to get its current position/size
+            // First try to find it in current layers, then fall back to stored layer data
+            let inputLayer = foundJob?.layerId ? currentLayers.find(l => l.id === foundJob.layerId) : null
+            if (!inputLayer && foundJob?.inputLayer) {
+              // Use stored layer data as fallback if layer was deleted
+              inputLayer = foundJob.inputLayer
+            }
+
+            // Calculate dimensions maintaining aspect ratio, with max dimension if enabled
+            const aspectRatio = croppedThumbnail.width / croppedThumbnail.height
+
+            let width: number, height: number
+            if (maxDimensionEnabled) {
+              if (croppedThumbnail.width > croppedThumbnail.height) {
+                // Landscape thumbnail
+                width = Math.min(croppedThumbnail.width, maxDimension)
+                height = width / aspectRatio
+              } else {
+                // Portrait or square thumbnail
+                height = Math.min(croppedThumbnail.height, maxDimension)
+                width = height * aspectRatio
+              }
+            } else {
+              // Use original dimensions
+              width = croppedThumbnail.width
+              height = croppedThumbnail.height
+            }
+
+            // Ensure they are divisible by 4
+            width = Math.ceil(width / 4) * 4
+            height = Math.ceil(height / 4) * 4
+
+            // Create thumbnail layer (represents the GLB)
+            const thumbnailLayer: Layer = {
+              id: `layer-ai-glb-${Date.now()}`,
+              type: 'image',
+              image: croppedThumbnail,
+              x: inputLayer ? inputLayer.x : 200,
+              y: inputLayer ? inputLayer.y : 200,
+              width,
+              height,
+              rotation: 0,
+              name: layerName,
+              visible: true,
+              isGlbThumbnail: true,
+              glbUrl: glbUrl,
+              delayTime: timing?.delayTime,
+              executionTime: timing?.executionTime,
+              prompt,
+              instruction,
+              resultUrl,
+              serviceId: service.id,
+              billing,
+            }
+
+            const updatedLayers = [...currentLayers, thumbnailLayer]
+            setSelectedLayerIds([thumbnailLayer.id])
+            saveToHistory(updatedLayers, [thumbnailLayer.id])
+
+            // Force canvas redraw by triggering state update
+            setForceRedraw(prev => prev + 1)
+
+            return updatedLayers
+          })
+        }).catch(error => {
+          console.error('Failed to generate GLB thumbnail:', error)
+          // Don't create layer if thumbnail generation fails
+          if (jobId) {
+            setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+              ...j,
+              progress: 100,
+              status: "Failed to generate GLB thumbnail",
+              apiStatus: "FAILED",
+              result: { error: true, message: "Failed to generate GLB thumbnail" },
+              polling: false
+            } : j))
+          }
+        })
+
+        // Update job status
+        if (jobId) {
+          setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+            ...j,
+            progress: 100,
+            status: "AI generated GLB added to canvas successfully!",
+            apiStatus: "COMPLETED",
+            result: { success: true, message: "AI generated GLB added to canvas successfully!" },
+            polling: false
+          } : j))
+        }
       } else {
         // Handle image result (existing logic)
         const img = new window.Image()
@@ -3633,7 +3968,7 @@ export function CanvasEditor() {
             <input
               ref={layerInputRef}
               type="file"
-              accept="image/*,video/*"
+              accept="image/*,video/*,.glb,.gltf"
               multiple
               onChange={handleLayerUpload}
               className="hidden"
@@ -4236,7 +4571,20 @@ export function CanvasEditor() {
             <div className="bg-muted/30">
               <div className="p-3 pt-0">
                 <Button
-                  onClick={() => setShowServiceSelector(true)}
+                  onClick={() => {
+                    setShowServiceSelector(true)
+                    // Close GLB viewer if open
+                    if (showGlbViewer) {
+                      setShowGlbViewer(false)
+                      if (currentGlbUrl) {
+                        setLayers(prev => prev.map(l => l.glbUrl === currentGlbUrl ? { ...l, visible: true } : l))
+                      }
+                      setCurrentGlbUrl(null)
+                      setCurrentGlbTitle("")
+                      setCurrentGlbPosition({ x: 100, y: 100 })
+                      setCurrentGlbSize({ width: 600, height: 500 })
+                    }
+                  }}
                   className="w-full"
                   variant="outline"
                 >
@@ -4273,6 +4621,92 @@ export function CanvasEditor() {
             onWheel={handleWheel}
             className="w-full h-full cursor-default touch-none"
           />
+          {/* GLB Selection Overlays */}
+          {layers.filter(layer => layer.type === 'glb' && layer.visible && selectedLayerIds.includes(layer.id)).map(layer => {
+            const baseLeft = pan.x + layer.x * zoom
+            const baseTop = pan.y + layer.y * zoom
+            const width = layer.width * zoom
+            const height = layer.height * zoom
+            const handleSize = 8
+
+            const selectionStyle: React.CSSProperties = {
+              position: 'absolute',
+              left: `${baseLeft}px`,
+              top: `${baseTop}px`,
+              width: `${width}px`,
+              height: `${height}px`,
+              transform: `translate(${dragDelta.x}px, ${dragDelta.y}px)`,
+              pointerEvents: 'auto',
+              border: '2px solid #6366f1',
+              boxSizing: 'border-box',
+              cursor: 'move',
+            }
+
+            const handles = [
+              { type: 'nw', x: 0, y: 0, cursor: 'nw-resize' },
+              { type: 'n', x: width / 2, y: 0, cursor: 'n-resize' },
+              { type: 'ne', x: width, y: 0, cursor: 'ne-resize' },
+              { type: 'e', x: width, y: height / 2, cursor: 'e-resize' },
+              { type: 'se', x: width, y: height, cursor: 'se-resize' },
+              { type: 's', x: width / 2, y: height, cursor: 's-resize' },
+              { type: 'sw', x: 0, y: height, cursor: 'sw-resize' },
+              { type: 'w', x: 0, y: height / 2, cursor: 'w-resize' },
+            ]
+
+            return (
+              <div key={`selection-${layer.id}`}>
+                <div
+                  style={selectionStyle}
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    setSelectedLayerIds([layer.id])
+                    setIsDragging(true)
+                    const canvasRect = canvasRef.current?.getBoundingClientRect()
+                    if (canvasRect) {
+                      const screenX = e.clientX - canvasRect.left
+                      const screenY = e.clientY - canvasRect.top
+                      const canvasX = (screenX - pan.x) / zoom
+                      const canvasY = (screenY - pan.y) / zoom
+                      setDragStart({ x: canvasX, y: canvasY })
+                      setInitialDragPositions({ [layer.id]: { x: layer.x, y: layer.y } })
+                    }
+                  }}
+                  onDragStart={(e) => e.preventDefault()}
+                />
+                {handles.map(h => (
+                  <div
+                    key={`handle-${layer.id}-${h.type}`}
+                    style={{
+                      position: 'absolute',
+                      left: `${baseLeft + h.x}px`,
+                      top: `${baseTop + h.y}px`,
+                      width: `${handleSize}px`,
+                      height: `${handleSize}px`,
+                      background: 'white',
+                      border: '2px solid #6366f1',
+                      transform: 'translate(-50%, -50%)',
+                      cursor: h.cursor,
+                      pointerEvents: 'auto',
+                      zIndex: 3,
+                    }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation()
+                      setIsResizing(true)
+                      setActiveHandle(h.type as Handle)
+                      setInitialLayerState({ ...layer })
+                      const canvasRect = canvasRef.current?.getBoundingClientRect()
+                      if (canvasRect) {
+                        const screenX = e.clientX - canvasRect.left
+                        const screenY = e.clientY - canvasRect.top
+                        setDragStart({ x: screenX, y: screenY })
+                      }
+                    }}
+                    onDragStart={(e) => e.preventDefault()}
+                  />
+                ))}
+              </div>
+            )
+          })}
           {layers.length === 0 && !isDragOver && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="text-center">
@@ -4677,6 +5111,10 @@ export function CanvasEditor() {
                             <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-black text-white">
                               <Video className="w-4 h-4" />
                             </div>
+                          ) : layer.type === 'glb' ? (
+                            <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-blue-100 text-blue-800">
+                              <Box className="w-4 h-4" />
+                            </div>
                           ) : null}
                         </div>
                         <div className="flex-1 min-w-0">
@@ -4686,47 +5124,82 @@ export function CanvasEditor() {
                           </p>
                         </div>
                         <div className="flex flex-col gap-0.5">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setLayers(prev => prev.map(l =>
-                                l.id === layer.id ? { ...l, visible: !l.visible } : l
-                              ))
-                            }}
-                            className="h-6 w-6 p-0"
-                            title={layer.visible ? "Hide layer" : "Show layer"}
-                          >
-                            {layer.visible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              moveLayerUp(layer.id)
-                            }}
-                            disabled={actualIndex === layers.length - 1}
-                            className="h-6 w-6 p-0"
-                            title="Move up"
-                          >
-                            <ChevronUp className="w-3 h-3" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              moveLayerDown(layer.id)
-                            }}
-                            disabled={actualIndex === 0}
-                            className="h-6 w-6 p-0"
-                            title="Move down"
-                          >
-                            <ChevronDown className="w-3 h-3" />
-                          </Button>
-                        </div>
+                           <Button
+                             variant="ghost"
+                             size="sm"
+                             onClick={(e) => {
+                               e.stopPropagation()
+                               setLayers(prev => prev.map(l =>
+                                 l.id === layer.id ? { ...l, visible: !l.visible } : l
+                               ))
+                             }}
+                             className="h-6 w-6 p-0"
+                             title={layer.visible ? "Hide layer" : "Show layer"}
+                           >
+                             {layer.visible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                           </Button>
+                           {layer.isGlbThumbnail && layer.glbUrl && (
+                             <Button
+                               variant="ghost"
+                               size="sm"
+                               onClick={(e) => {
+                                 e.stopPropagation()
+                                 // Show the previously hidden layer if any
+                                 if (currentGlbUrl) {
+                                   setLayers(prev => prev.map(l => l.glbUrl === currentGlbUrl ? { ...l, visible: true } : l))
+                                 }
+                                 setCurrentGlbUrl(layer.glbUrl!)
+                                 setCurrentGlbTitle(layer.name.replace(' Thumbnail', ''))
+                                 // Calculate screen position and size of the thumbnail
+                                 const canvasRect = canvasRef.current?.getBoundingClientRect()
+                                 if (canvasRect) {
+                                   const originalWidth = layer.width * zoom
+                                   const originalHeight = layer.height * zoom
+                                   const screenWidth = originalWidth * 1.2
+                                   const screenHeight = originalHeight * 1.2
+                                   const screenX = canvasRect.left + pan.x + layer.x * zoom - (screenWidth - originalWidth) / 2
+                                   const screenY = canvasRect.top + pan.y + layer.y * zoom - (screenHeight - originalHeight) / 2
+                                   setCurrentGlbPosition({ x: screenX, y: screenY })
+                                   setCurrentGlbSize({ width: screenWidth, height: screenHeight })
+                                 }
+                                 // Hide the thumbnail layer
+                                 setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, visible: false } : l))
+                                 setSelectedLayerIds([])
+                                 setShowGlbViewer(true)
+                               }}
+                               className="h-6 w-6 p-0"
+                               title="Open GLB Preview"
+                             >
+                               <Box className="w-3 h-3" />
+                             </Button>
+                           )}
+                           <Button
+                             variant="ghost"
+                             size="sm"
+                             onClick={(e) => {
+                               e.stopPropagation()
+                               moveLayerUp(layer.id)
+                             }}
+                             disabled={actualIndex === layers.length - 1}
+                             className="h-6 w-6 p-0"
+                             title="Move up"
+                           >
+                             <ChevronUp className="w-3 h-3" />
+                           </Button>
+                           <Button
+                             variant="ghost"
+                             size="sm"
+                             onClick={(e) => {
+                               e.stopPropagation()
+                               moveLayerDown(layer.id)
+                             }}
+                             disabled={actualIndex === 0}
+                             className="h-6 w-6 p-0"
+                             title="Move down"
+                           >
+                             <ChevronDown className="w-3 h-3" />
+                           </Button>
+                         </div>
                       </div>
                     )
                   })}
@@ -4756,12 +5229,12 @@ export function CanvasEditor() {
                         <div>
                           <span className="font-medium">Result URL:</span>{' '}
                           <a
-                            href={primarySelectedLayer.resultUrl}
+                            href={primarySelectedLayer.resultUrl!}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-500 hover:text-blue-700 underline break-all"
                           >
-                            {primarySelectedLayer.resultUrl}
+                            {primarySelectedLayer.resultUrl!}
                           </a>
                         </div>
                       )}
@@ -4960,6 +5433,22 @@ export function CanvasEditor() {
                     <Trash2 className="w-3 h-3 mr-1" />
                     Delete
                   </Button>
+                  {primarySelectedLayer?.isGlbThumbnail && primarySelectedLayer.glbUrl && (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const a = document.createElement("a")
+                        a.href = primarySelectedLayer.glbUrl!
+                        a.download = `${primarySelectedLayer.name.replace(' Thumbnail', '').replace(/\s+/g, '_')}-TostAI-${Date.now()}.glb`
+                        a.click()
+                      }}
+                      disabled={selectedLayerIds.length !== 1}
+                      className="text-xs col-span-3 bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                      <Download className="w-3 h-3 mr-1" />
+                      Export GLB
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     onClick={() => exportLayer(selectedLayerIds[0])}
@@ -5064,19 +5553,7 @@ export function CanvasEditor() {
         </div>
       )}
 
-      {/* GLB Preview Modal */}
-      {showGLBPreview && currentGLBFile && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <GLBPreview
-            file={currentGLBFile}
-            onThumbnailGenerated={handleGLBThumbnailGenerated}
-            onClose={() => {
-              setShowGLBPreview(false)
-              setCurrentGLBFile(null)
-            }}
-          />
-        </div>
-      )}
+
 
       {/* Service Selector Modal */}
       {isClient && showServiceSelector && (
@@ -5470,6 +5947,27 @@ export function CanvasEditor() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* GLB Viewer Window */}
+      {showGlbViewer && currentGlbUrl && (
+        <GLBViewerWindow
+          glbUrl={currentGlbUrl!}
+          title={currentGlbTitle}
+          initialPosition={currentGlbPosition}
+          initialSize={currentGlbSize}
+          onClose={() => {
+            // Show the thumbnail layer again
+            if (currentGlbUrl) {
+              setLayers(prev => prev.map(l => l.glbUrl === currentGlbUrl ? { ...l, visible: true } : l))
+            }
+            setShowGlbViewer(false)
+            setCurrentGlbUrl(null)
+            setCurrentGlbTitle("")
+            setCurrentGlbPosition({ x: 100, y: 100 })
+            setCurrentGlbSize({ width: 600, height: 500 })
+          }}
+        />
       )}
     </div>
   )
