@@ -29,6 +29,8 @@
 
 #### 🍞 TostUI - Qwen Image Edit 2511 (8bit)
 
+https://github.com/user-attachments/assets/a5c76b73-60a0-4234-a944-ac3242725f9e
+
 1.  **Install Docker**\
     [Download Docker Desktop (Windows AMD64)](https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe)
     and run it.
