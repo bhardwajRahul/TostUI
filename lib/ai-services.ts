@@ -3,7 +3,7 @@ export interface AIService {
     id: string
     name: string
     description: string
-    category: "image" | "video" | "3d"
+    category: "image" | "video" | "3d" | "audio"
     icon: string
     inputTypes: string[]
     parameters: Parameter[]
@@ -22,7 +22,7 @@ export interface AIService {
 
 export interface Parameter {
   name: string
-  type: "string" | "number" | "boolean" | "file" | "select" | "slider"
+  type: "string" | "number" | "boolean" | "file" | "audio" | "select" | "slider"
   label: string
   description?: string
   required?: boolean
@@ -48,6 +48,8 @@ export const getCategoryIcon = (category: string) => {
       return "Video"
     case "3d":
       return "Box"
+    case "audio":
+      return "AudioWaveform"
     default:
       return "Zap"
   }
@@ -61,6 +63,8 @@ export const getCategoryColor = (category: string) => {
       return "bg-chart-2/10 text-chart-2 border-chart-2/20"
     case "3d":
       return "bg-chart-3/10 text-chart-3 border-chart-3/20"
+    case "audio":
+      return "bg-chart-4/10 text-chart-4 border-chart-4/20"
     default:
       return "bg-muted/10 text-muted-foreground border-muted/20"
   }

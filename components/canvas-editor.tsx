@@ -77,10 +77,13 @@ import {
   Book,
   Scissors,
   Earth,
+  Volume2,
+  Mic,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ThemeToggle } from "./theme-toggle"
 import { GLBViewerWindow } from "./glb-viewer-window"
+import { WaveformOverlay } from "./waveform-overlay"
 import { useTheme } from 'next-themes'
 import dynamic from 'next/dynamic'
 import { AutoModel, AutoProcessor, RawImage } from '@huggingface/transformers'
@@ -103,7 +106,7 @@ import { loadAiServices, getCategoryColor, getCategoryIcon, type AIService } fro
 // Local API allowed services
 const TOST_UI_LOCAL_API_SERVICES = process.env.NEXT_PUBLIC_TOST_UI_LOCAL_API_SERVICES ? process.env.NEXT_PUBLIC_TOST_UI_LOCAL_API_SERVICES.split(',') : []
 
-type LayerType = 'image' | 'text' | 'video' | 'glb'
+type LayerType = 'image' | 'text' | 'video' | 'audio' | 'glb'
 
 interface Layer {
     id: string
@@ -121,6 +124,10 @@ interface Layer {
     currentTime?: number
     duration?: number
     isPlaying?: boolean
+    // For audio layers
+    audio?: HTMLAudioElement
+    audioUrl?: string
+    volume?: number
     // For GLB layers
     glbUrl?: string
     // For GLB thumbnails
@@ -276,6 +283,8 @@ export function CanvasEditor() {
 
   // Video playback state
   const [playingVideos, setPlayingVideos] = useState<Set<string>>(new Set())
+  // Audio playback state
+  const [playingAudios, setPlayingAudios] = useState<Set<string>>(new Set())
   const animationFrameRef = useRef<number | null>(null)
   const lastDrawTime = useRef<number>(0)
   const isSeekingRef = useRef<Record<string, boolean>>({})
@@ -527,6 +536,7 @@ export function CanvasEditor() {
     { id: "image", name: "Image", count: filteredAvailableServices.filter((s) => s.category === "image").length },
     { id: "video", name: "Video", count: filteredAvailableServices.filter((s) => s.category === "video").length },
     { id: "3d", name: "3D", count: filteredAvailableServices.filter((s) => s.category === "3d").length },
+    { id: "audio", name: "Audio", count: filteredAvailableServices.filter((s) => s.category === "audio").length },
   ].filter(category => category.count > 0)
   
   // Function to get the actual icon component from string name
@@ -541,6 +551,7 @@ export function CanvasEditor() {
       case "Zap": return Zap
       case "Camera": return Camera
       case "Grid3X3": return Grid3X3
+      case "Mic": return Mic
       default: return Zap
     }
   }
@@ -850,6 +861,117 @@ export function CanvasEditor() {
   // Handle paste image from clipboard
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
+      // Check if there's stored layer data from copy operation
+      const copiedLayerData = localStorage.getItem('copiedLayerData')
+      if (copiedLayerData) {
+        try {
+          const originalLayer: Layer = JSON.parse(copiedLayerData)
+          // Clear the stored data
+          localStorage.removeItem('copiedLayerData')
+
+          // Create a copy of the layer with new ID and position
+          const canvas = canvasRef.current
+          let centerX = 200, centerY = 200
+          if (canvas) {
+            const rect = canvas.getBoundingClientRect()
+            centerX = (rect.width / 2 - pan.x) / zoom
+            centerY = (rect.height / 2 - pan.y) / zoom
+          }
+
+          const newLayer: Layer = {
+            ...originalLayer,
+            id: `layer-paste-${Date.now()}`,
+            name: `${originalLayer.name} (copy)`,
+            x: centerX - originalLayer.width / 2,
+            y: centerY - originalLayer.height / 2,
+            // For audio layers, we need to create new audio element
+            ...(originalLayer.type === 'audio' && originalLayer.audioUrl ? {
+              audio: document.createElement('audio'),
+              currentTime: 0,
+              duration: 0,
+              isPlaying: false,
+              volume: originalLayer.volume || 1,
+            } : {}),
+            // For video layers, we need to create new video element
+            ...(originalLayer.type === 'video' && originalLayer.videoUrl ? {
+              video: document.createElement('video'),
+              currentTime: 0,
+              duration: 0,
+              isPlaying: false,
+            } : {}),
+          }
+
+          // Load audio/video if needed
+          if (originalLayer.type === 'audio' && originalLayer.audioUrl) {
+            const audio = newLayer.audio!
+            audio.preload = 'auto'
+            audio.src = originalLayer.audioUrl
+
+            // Handle duration updates when metadata loads
+            const handleMetadataLoaded = () => {
+              // Update duration in existing layer if it exists
+              setLayers(currentLayers => {
+                return currentLayers.map(layer => {
+                  if (layer.type === 'audio' && layer.audio === audio && (!layer.duration || layer.duration !== audio.duration)) {
+                    return { ...layer, duration: audio.duration }
+                  }
+                  return layer
+                })
+              })
+            }
+
+            audio.addEventListener('loadedmetadata', handleMetadataLoaded)
+            audio.addEventListener('durationchange', handleMetadataLoaded)
+          } else if (originalLayer.type === 'video' && originalLayer.videoUrl) {
+            const video = newLayer.video!
+            video.preload = 'auto'
+            video.src = originalLayer.videoUrl
+            video.muted = true
+
+            // Handle duration updates when metadata loads
+            const handleMetadataLoaded = () => {
+              // Update duration in existing layer if it exists
+              setLayers(currentLayers => {
+                return currentLayers.map(layer => {
+                  if (layer.type === 'video' && layer.video === video && (!layer.duration || layer.duration !== video.duration)) {
+                    return { ...layer, duration: video.duration }
+                  }
+                  return layer
+                })
+              })
+            }
+
+            video.addEventListener('loadedmetadata', handleMetadataLoaded)
+            video.addEventListener('durationchange', handleMetadataLoaded)
+
+            // Handle time updates during playback
+            const handleTimeUpdate = () => {
+              setLayers(currentLayers => {
+                return currentLayers.map(layerItem => {
+                  if (layerItem.type === 'video' && layerItem.video === video) {
+                    return { ...layerItem, currentTime: video.currentTime }
+                  }
+                  return layerItem
+                })
+              })
+            }
+
+            video.addEventListener('timeupdate', handleTimeUpdate)
+          }
+
+          const updatedLayers = [...layers, newLayer]
+          setLayers(updatedLayers)
+          setSelectedLayerIds([newLayer.id])
+          saveToHistory(updatedLayers, [newLayer.id])
+
+          e.preventDefault()
+          return
+        } catch (error) {
+          console.error('Failed to paste layer data:', error)
+          // Fall through to image paste handling
+        }
+      }
+
       const items = e.clipboardData?.items
       if (!items) return
 
@@ -974,7 +1096,8 @@ export function CanvasEditor() {
      const visibleLayers = layers.filter(layer => layer.visible && (
        (layer.type === 'image' && layer.image && layer.image.complete) ||
        (layer.type === 'text' && layer.text) ||
-       (layer.type === 'video' && layer.video)
+       (layer.type === 'video' && layer.video) ||
+       (layer.type === 'audio' && layer.audio)
      ))
 
     visibleLayers.forEach((layer) => {
@@ -987,7 +1110,7 @@ export function CanvasEditor() {
           ctx.drawImage(layer.image, -layer.width / 2, -layer.height / 2, layer.width, layer.height)
         } else if (layer.type === 'text' && layer.text) {
           ctx.font = `${layer.fontSize || 24}px ${layer.fontFamily || 'Arial'}`
-          ctx.fillStyle = layer.color || '#000000'
+          ctx.fillStyle = layer.color || (resolvedTheme === 'dark' ? '#ffffff' : '#000000')
           ctx.textAlign = 'center'
           ctx.textBaseline = 'middle'
           ctx.fillText(layer.text, 0, 0)
@@ -1073,20 +1196,20 @@ export function CanvasEditor() {
     drawCanvas()
   }, [layers, selectedLayerIds, canvasSize, zoom, pan, forceRedraw, resolvedTheme])
 
-  // Manage video playback loop
+  // Manage video and audio playback loop
   useEffect(() => {
-    if (playingVideos.size > 0) {
+    if (playingVideos.size > 0 || playingAudios.size > 0) {
       startVideoLoop()
     } else {
       stopVideoLoop()
     }
 
     return () => stopVideoLoop()
-  }, [playingVideos.size])
+  }, [playingVideos.size, playingAudios.size])
 
-  // Show timeline panel when video layers are present
+  // Show timeline panel when video or audio layers are present
   useEffect(() => {
-    if (layers.some(layer => layer.type === 'video')) {
+    if (layers.some(layer => layer.type === 'video' || layer.type === 'audio')) {
       setShowTimelinePanel(true)
     }
   }, [layers])
@@ -1095,10 +1218,12 @@ export function CanvasEditor() {
   useEffect(() => {
     return () => {
       stopVideoLoop()
-      // Pause all videos
+      // Pause all videos and audios
       layers.forEach(layer => {
         if (layer.type === 'video' && layer.video) {
           layer.video.pause()
+        } else if (layer.type === 'audio' && layer.audio) {
+          layer.audio.pause()
         }
       })
     }
@@ -1120,6 +1245,7 @@ export function CanvasEditor() {
 
       const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'))
       const videoFiles = Array.from(files).filter(file => file.type.startsWith('video/'))
+      const audioFiles = Array.from(files).filter(file => file.type.startsWith('audio/'))
       const glbFiles = Array.from(files).filter(file => file.name.toLowerCase().endsWith('.glb') || file.name.toLowerCase().endsWith('.gltf'))
 
      // Handle video files
@@ -1204,6 +1330,88 @@ export function CanvasEditor() {
                y: centerY - height / 2 + offsetY,
                width,
                height,
+               rotation: 0,
+               name: file.name,
+               visible: true,
+             }
+
+             newLayers.push(newLayer)
+             resolve()
+           }
+         })
+       }
+
+       const updatedLayers = [...layers, ...newLayers]
+       setLayers(updatedLayers)
+       setSelectedLayerIds([newLayers[newLayers.length - 1].id])
+       saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
+     }
+
+     // Handle audio files
+     if (audioFiles.length > 0) {
+       const canvas = canvasRef.current
+       if (!canvas) return
+
+       // Calculate center position of the visible canvas area
+       const rect = canvas.getBoundingClientRect()
+       const centerX = (rect.width / 2 - pan.x) / zoom
+       const centerY = (rect.height / 2 - pan.y) / zoom
+
+       const newLayers: Layer[] = []
+       for (let i = 0; i < audioFiles.length; i++) {
+         const file = audioFiles[i]
+         const audio = document.createElement('audio')
+         audio.preload = 'auto'
+         audio.src = URL.createObjectURL(file)
+
+         // Handle duration updates when metadata loads
+         const handleMetadataLoaded = () => {
+           // Update duration in existing layer if it exists
+           setLayers(currentLayers => {
+             return currentLayers.map(layer => {
+               if (layer.type === 'audio' && layer.audio === audio && (!layer.duration || layer.duration !== audio.duration)) {
+                 return { ...layer, duration: audio.duration }
+               }
+               return layer
+             })
+           })
+         }
+
+         audio.addEventListener('loadedmetadata', handleMetadataLoaded)
+         audio.addEventListener('durationchange', handleMetadataLoaded)
+
+         await new Promise<void>((resolve) => {
+           audio.onloadeddata = () => {
+             // Use fixed dimensions for audio layers
+             const width = 600
+             const height = 100
+
+             // Ensure they are divisible by 4
+             const finalWidth = Math.ceil(width / 4) * 4
+             const finalHeight = Math.ceil(height / 4) * 4
+
+             // Arrange audio files in a grid pattern around the center
+             const cols = Math.ceil(Math.sqrt(audioFiles.length))
+             const rows = Math.ceil(audioFiles.length / cols)
+             const colIndex = i % cols
+             const rowIndex = Math.floor(i / cols)
+
+             const spacing = 220 // Space between audio layers
+             const offsetX = (colIndex - (cols - 1) / 2) * spacing
+             const offsetY = (rowIndex - (rows - 1) / 2) * spacing
+
+             const newLayer: Layer = {
+               id: `layer-audio-${Date.now()}-${i}`,
+               type: 'audio',
+               audio: audio,
+               audioUrl: URL.createObjectURL(file),
+               currentTime: 0,
+               duration: audio.duration || 0, // Use 0 as fallback if duration not available yet
+               isPlaying: false,
+               x: centerX - finalWidth / 2 + offsetX,
+               y: centerY - finalHeight / 2 + offsetY,
+               width: finalWidth,
+               height: finalHeight,
                rotation: 0,
                name: file.name,
                visible: true,
@@ -1459,6 +1667,7 @@ export function CanvasEditor() {
     const allFiles = Array.from(e.dataTransfer.files)
     const imageFiles = allFiles.filter((file) => file.type.startsWith("image/"))
     const videoFiles = allFiles.filter((file) => file.type.startsWith("video/"))
+    const audioFiles = allFiles.filter((file) => file.type.startsWith("audio/"))
     const glbFiles = allFiles.filter((file) => file.name.toLowerCase().endsWith('.glb') || file.name.toLowerCase().endsWith('.gltf'))
 
     // Handle video files
@@ -1545,6 +1754,282 @@ export function CanvasEditor() {
               y: dropY - height / 2 + i * 20,
               width,
               height,
+              rotation: 0,
+              name: file.name,
+              visible: true,
+            }
+
+            newLayers.push(newLayer)
+            resolve()
+          }
+        })
+      }
+
+      const updatedLayers = [...layers, ...newLayers]
+      setLayers(updatedLayers)
+      setSelectedLayerIds([newLayers[newLayers.length - 1].id])
+      saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
+    }
+
+    // Handle audio files
+    if (audioFiles.length > 0) {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      // Calculate center position of the visible canvas area
+      const rect = canvas.getBoundingClientRect()
+      const centerX = (rect.width / 2 - pan.x) / zoom
+      const centerY = (rect.height / 2 - pan.y) / zoom
+
+      const newLayers: Layer[] = []
+      for (let i = 0; i < audioFiles.length; i++) {
+        const file = audioFiles[i]
+        const audio = document.createElement('audio')
+        audio.preload = 'auto'
+        audio.src = URL.createObjectURL(file)
+
+        // Handle duration updates when metadata loads
+        const handleMetadataLoaded = () => {
+          // Update duration in existing layer if it exists
+          setLayers(currentLayers => {
+            return currentLayers.map(layer => {
+              if (layer.type === 'audio' && layer.audio === audio && (!layer.duration || layer.duration !== audio.duration)) {
+                return { ...layer, duration: audio.duration }
+              }
+              return layer
+            })
+          })
+        }
+
+        audio.addEventListener('loadedmetadata', handleMetadataLoaded)
+        audio.addEventListener('durationchange', handleMetadataLoaded)
+
+        await new Promise<void>((resolve) => {
+          audio.onloadeddata = () => {
+            // Use fixed dimensions for audio layers
+            const width = 600
+            const height = 100
+
+            // Ensure they are divisible by 4
+            const finalWidth = Math.ceil(width / 4) * 4
+            const finalHeight = Math.ceil(height / 4) * 4
+
+            // Arrange audio files in a grid pattern around the center
+            const cols = Math.ceil(Math.sqrt(audioFiles.length))
+            const rows = Math.ceil(audioFiles.length / cols)
+            const colIndex = i % cols
+            const rowIndex = Math.floor(i / cols)
+
+            const spacing = 220 // Space between audio layers
+            const offsetX = (colIndex - (cols - 1) / 2) * spacing
+            const offsetY = (rowIndex - (rows - 1) / 2) * spacing
+
+            const newLayer: Layer = {
+              id: `layer-audio-${Date.now()}-${i}`,
+              type: 'audio',
+              audio: audio,
+              audioUrl: URL.createObjectURL(file),
+              currentTime: 0,
+              duration: audio.duration || 0, // Use 0 as fallback if duration not available yet
+              isPlaying: false,
+              x: centerX - finalWidth / 2 + offsetX,
+              y: centerY - finalHeight / 2 + offsetY,
+              width: finalWidth,
+              height: finalHeight,
+              rotation: 0,
+              name: file.name,
+              visible: true,
+            }
+
+            newLayers.push(newLayer)
+            resolve()
+          }
+        })
+      }
+
+      const updatedLayers = [...layers, ...newLayers]
+      setLayers(updatedLayers)
+      setSelectedLayerIds([newLayers[newLayers.length - 1].id])
+      saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
+    }
+
+    // Handle audio files
+    if (audioFiles.length > 0) {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      // Calculate center position of the visible canvas area
+      const rect = canvas.getBoundingClientRect()
+      const centerX = (rect.width / 2 - pan.x) / zoom
+      const centerY = (rect.height / 2 - pan.y) / zoom
+
+      const newLayers: Layer[] = []
+      for (let i = 0; i < audioFiles.length; i++) {
+        const file = audioFiles[i]
+        const audio = document.createElement('audio')
+        audio.preload = 'auto'
+        audio.src = URL.createObjectURL(file)
+
+        // Handle duration updates when metadata loads
+        const handleMetadataLoaded = () => {
+          // Update duration in existing layer if it exists
+          setLayers(currentLayers => {
+            return currentLayers.map(layer => {
+              if (layer.type === 'audio' && layer.audio === audio && (!layer.duration || layer.duration !== audio.duration)) {
+                return { ...layer, duration: audio.duration }
+              }
+              return layer
+            })
+          })
+        }
+
+        audio.addEventListener('loadedmetadata', handleMetadataLoaded)
+        audio.addEventListener('durationchange', handleMetadataLoaded)
+
+        await new Promise<void>((resolve) => {
+          audio.onloadeddata = () => {
+            // Use fixed dimensions for audio layers
+            const width = 600
+            const height = 100
+
+            // Ensure they are divisible by 4
+            const finalWidth = Math.ceil(width / 4) * 4
+            const finalHeight = Math.ceil(height / 4) * 4
+
+            // Arrange audio files in a grid pattern around the center
+            const cols = Math.ceil(Math.sqrt(audioFiles.length))
+            const rows = Math.ceil(audioFiles.length / cols)
+            const colIndex = i % cols
+            const rowIndex = Math.floor(i / cols)
+
+            const spacing = 220 // Space between audio layers
+            const offsetX = (colIndex - (cols - 1) / 2) * spacing
+            const offsetY = (rowIndex - (rows - 1) / 2) * spacing
+
+            const newLayer: Layer = {
+              id: `layer-audio-${Date.now()}-${i}`,
+              type: 'audio',
+              audio: audio,
+              audioUrl: URL.createObjectURL(file),
+              currentTime: 0,
+              duration: audio.duration || 0, // Use 0 as fallback if duration not available yet
+              isPlaying: false,
+              volume: 1, // Default volume
+              x: centerX - finalWidth / 2 + offsetX,
+              y: centerY - finalHeight / 2 + offsetY,
+              width: finalWidth,
+              height: finalHeight,
+              rotation: 0,
+              name: file.name,
+              visible: true,
+            }
+
+            newLayers.push(newLayer)
+            resolve()
+          }
+        })
+      }
+
+      const updatedLayers = [...layers, ...newLayers]
+      setLayers(updatedLayers)
+      setSelectedLayerIds([newLayers[newLayers.length - 1].id])
+      saveToHistory(updatedLayers, [newLayers[newLayers.length - 1].id])
+    }
+
+    // Handle audio files
+    if (audioFiles.length > 0) {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      // Calculate center position of the visible canvas area
+      const rect = canvas.getBoundingClientRect()
+      const centerX = (rect.width / 2 - pan.x) / zoom
+      const centerY = (rect.height / 2 - pan.y) / zoom
+
+      const newLayers: Layer[] = []
+      for (let i = 0; i < audioFiles.length; i++) {
+        const file = audioFiles[i]
+        const audio = document.createElement('audio')
+        audio.preload = 'auto'
+        audio.src = URL.createObjectURL(file)
+
+        // Handle duration updates when metadata loads
+        const handleMetadataLoaded = () => {
+          // Update duration in existing layer if it exists
+          setLayers(currentLayers => {
+            return currentLayers.map(layer => {
+              if (layer.type === 'audio' && layer.audio === audio && (!layer.duration || layer.duration !== audio.duration)) {
+                return { ...layer, duration: audio.duration }
+              }
+              return layer
+            })
+          })
+        }
+
+        audio.addEventListener('loadedmetadata', handleMetadataLoaded)
+        audio.addEventListener('durationchange', handleMetadataLoaded)
+
+        // Handle time updates during playback
+        const handleTimeUpdate = () => {
+          setLayers(currentLayers => {
+            return currentLayers.map(layerItem => {
+              if (layerItem.type === 'audio' && layerItem.audio === audio) {
+                return { ...layerItem, currentTime: audio.currentTime }
+              }
+              return layerItem
+            })
+          })
+        }
+
+        audio.addEventListener('timeupdate', handleTimeUpdate)
+
+        // Handle time updates during playback
+        const handleAudioTimeUpdate = () => {
+          setLayers(currentLayers => {
+            return currentLayers.map(layerItem => {
+              if (layerItem.type === 'audio' && layerItem.audio === audio) {
+                return { ...layerItem, currentTime: audio.currentTime }
+              }
+              return layerItem
+            })
+          })
+        }
+
+        audio.addEventListener('timeupdate', handleAudioTimeUpdate)
+
+        await new Promise<void>((resolve) => {
+          audio.onloadeddata = () => {
+            // Use fixed dimensions for audio layers
+            const width = 600
+            const height = 100
+
+            // Ensure they are divisible by 4
+            const finalWidth = Math.ceil(width / 4) * 4
+            const finalHeight = Math.ceil(height / 4) * 4
+
+            // Arrange audio files in a grid pattern around the center
+            const cols = Math.ceil(Math.sqrt(audioFiles.length))
+            const rows = Math.ceil(audioFiles.length / cols)
+            const colIndex = i % cols
+            const rowIndex = Math.floor(i / cols)
+
+            const spacing = 220 // Space between audio layers
+            const offsetX = (colIndex - (cols - 1) / 2) * spacing
+            const offsetY = (rowIndex - (rows - 1) / 2) * spacing
+
+            const newLayer: Layer = {
+              id: `layer-audio-${Date.now()}-${i}`,
+              type: 'audio',
+              audio: audio,
+              audioUrl: URL.createObjectURL(file),
+              currentTime: 0,
+              duration: audio.duration || 0, // Use 0 as fallback if duration not available yet
+              isPlaying: false,
+              volume: 1, // Default volume
+              x: centerX - finalWidth / 2 + offsetX,
+              y: centerY - finalHeight / 2 + offsetY,
+              width: finalWidth,
+              height: finalHeight,
               rotation: 0,
               name: file.name,
               visible: true,
@@ -1964,9 +2449,9 @@ export function CanvasEditor() {
           setIsDragging(true)
           setDragStart({ x, y })
         }
-        // Show timeline if video layer is clicked
-        if (layer.type === 'video') {
-          setShowTimelinePanel(true)
+        // Show timeline if media layers are selected
+        if (layer.type === 'video' || layer.type === 'audio') {
+        setShowTimelinePanel(true)
         }
         return
       }
@@ -2419,6 +2904,15 @@ export function CanvasEditor() {
         return
       }
 
+      if (layer.type === 'audio' && layer.audioUrl) {
+        // For audio layers, download the audio file directly
+        const a = document.createElement("a")
+        a.href = layer.audioUrl!
+        a.download = `${layer.name.replace(/\s+/g, '_')}-TostAI-${Date.now()}.mp3`
+        a.click()
+        return
+      }
+
       if (layer.type === 'glb' && layer.glbUrl) {
         // For GLB layers, download the GLB file directly
         const a = document.createElement("a")
@@ -2602,6 +3096,14 @@ export function CanvasEditor() {
      if (!layer) return
 
      try {
+       // Store layer data for paste functionality (for audio and video layers)
+       if (layer.type === 'audio' || layer.type === 'video') {
+         localStorage.setItem('copiedLayerData', JSON.stringify(layer))
+       } else {
+         // Clear stored data when copying other layers
+         localStorage.removeItem('copiedLayerData')
+       }
+
        const canvas = document.createElement("canvas")
        canvas.width = layer.width
        canvas.height = layer.height
@@ -2617,6 +3119,33 @@ export function CanvasEditor() {
        } else if (layer.type === 'video' && layer.video) {
          // For video layers, copy the current frame as an image
          ctx.drawImage(layer.video, 0, 0, layer.width, layer.height)
+       } else if (layer.type === 'audio' && layer.audio) {
+         // For audio layers, copy the waveform visualization
+         const waveformContainer = document.querySelector(`[data-layer-id="${layer.id}"]`) as HTMLElement
+         if (waveformContainer) {
+           const waveformCanvas = waveformContainer.querySelector('canvas') as HTMLCanvasElement
+           if (waveformCanvas) {
+             ctx.drawImage(waveformCanvas, 0, 0, layer.width, layer.height)
+           } else {
+             // Fallback: create a simple waveform visualization
+             ctx.fillStyle = '#f0f0f0'
+             ctx.fillRect(0, 0, layer.width, layer.height)
+             ctx.strokeStyle = '#2196f3'
+             ctx.lineWidth = 2
+             ctx.beginPath()
+             const centerY = layer.height / 2
+             const amplitude = layer.height / 4
+             for (let x = 0; x < layer.width; x += 4) {
+               const y = centerY + Math.sin(x * 0.1) * amplitude * Math.random()
+               if (x === 0) {
+                 ctx.moveTo(x, y)
+               } else {
+                 ctx.lineTo(x, y)
+               }
+             }
+             ctx.stroke()
+           }
+         }
        } else if (layer.type === 'glb') {
          // GLB layers cannot be copied to clipboard as images
          return
@@ -2656,7 +3185,7 @@ export function CanvasEditor() {
     const text = "Text"
     const fontSize = 24
     const fontFamily = "Arial"
-    const color = "#000000"
+    const color = resolvedTheme === 'dark' ? '#ffffff' : '#000000'
 
     // Calculate center position
     const rect = canvas.getBoundingClientRect()
@@ -2829,20 +3358,36 @@ export function CanvasEditor() {
     // Check if service input type is text
     const isTextService = service.inputTypes && service.inputTypes.includes("text")
 
-    // Check if service requires 2 layers
+    // Check if service requires layers
+    const inputImageParam = service.parameters.find((p: any) => p.name === 'input_image' && p.ui === false)
     const inputImage1Param = service.parameters.find((p: any) => p.name === 'input_image1' && p.ui === false)
     const inputImage2Param = service.parameters.find((p: any) => p.name === 'input_image2' && p.ui === false)
+    const inputImage3Param = service.parameters.find((p: any) => p.name === 'input_image3' && p.ui === false)
+    const inputImageCheckParam = service.parameters.find((p: any) => p.name === 'input_image_check' && p.ui === false)
     const startImageParam = service.parameters.find((p: any) => p.name === 'start_image' && p.ui === false)
     const endImageParam = service.parameters.find((p: any) => p.name === 'end_image' && p.ui === false)
-
+    const inputAudioParam = service.parameters.find((p: any) => p.name === 'input_audio' && p.ui === false)
+  
     let inputLayers: Layer[] = []
-    if ((inputImage1Param && inputImage2Param) || (startImageParam && endImageParam)) {
-      // Service requires 2 layers
-      if (selectedLayers.length !== 2) return
+    if (inputAudioParam) {
+      // Service requires 1 audio layer
+      if (!primarySelectedLayer || primarySelectedLayer.type !== 'audio') return
+      inputLayers = [primarySelectedLayer]
+    } else if (inputImage1Param && inputImage2Param && inputImage3Param) {
+      // Service requires 3 image/video layers
+      if (selectedLayers.length !== 3 || !selectedLayers.every(layer => layer.type === 'image' || layer.type === 'video')) return
+      inputLayers = selectedLayers
+    } else if ((inputImage1Param && inputImage2Param) || (startImageParam && endImageParam)) {
+      // Service requires 2 image/video layers
+      if (selectedLayers.length !== 2 || !selectedLayers.every(layer => layer.type === 'image' || layer.type === 'video')) return
       inputLayers = selectedLayers
     } else {
       // Service requires 1 layer
       if (!primarySelectedLayer) return
+      // If service has image input parameters, require image or video layer
+      if (inputImageParam || inputImage1Param || inputImage2Param || inputImage3Param || inputImageCheckParam || startImageParam || endImageParam) {
+        if (primarySelectedLayer.type !== 'image' && primarySelectedLayer.type !== 'video') return
+      }
       inputLayers = [primarySelectedLayer]
     }
 
@@ -2899,7 +3444,10 @@ export function CanvasEditor() {
           const layer = inputLayers[i]
           let paramName: string
 
-          if (inputLayers.length === 2) {
+          if (inputLayers.length === 3) {
+            // For 3-layer services, use input_image1, input_image2, input_image3
+            paramName = `input_image${i + 1}`
+          } else if (inputLayers.length === 2) {
             // For 2-layer services, check what parameter names the service uses
             if (startImageParam && endImageParam) {
               // Services like wan2.2-i2v-flf use start_image and end_image
@@ -2913,6 +3461,7 @@ export function CanvasEditor() {
             const inputImageParam = service.parameters.find((p: any) => p.name === 'input_image' && p.ui === false)
             const inputImage1Param = service.parameters.find((p: any) => p.name === 'input_image1' && p.ui === false)
             const inputImageCheckParam = service.parameters.find((p: any) => p.name === 'input_image_check' && p.ui === false)
+            const inputAudioParam = service.parameters.find((p: any) => p.name === 'input_audio' && p.ui === false)
 
             if (inputImageParam) {
               paramName = 'input_image'
@@ -2920,6 +3469,8 @@ export function CanvasEditor() {
               paramName = 'input_image1'
             } else if (inputImageCheckParam) {
               paramName = 'input_image_check'
+            } else if (inputAudioParam) {
+              paramName = 'input_audio'
             } else {
               // Fallback
               paramName = 'input_image'
@@ -2948,12 +3499,21 @@ export function CanvasEditor() {
                 // Skip GLB layers in canvas capture
               }
 
-              const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve))
+              let blob: Blob | null = null
+              if (layer.type === 'audio' && layer.audioUrl) {
+                // For audio layers, fetch the audio blob directly
+                const response = await fetch(layer.audioUrl)
+                blob = await response.blob()
+              } else {
+                // For other types, create canvas blob
+                blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve))
+              }
               if (!blob) throw new Error("Could not create blob")
-
+              
               // Upload to tost.ai or MinIO
               const formData = new FormData()
-              formData.append('file', blob, `selected-layer-${i + 1}.png`)
+              const ext = layer.type === 'audio' ? 'mp3' : 'png'
+              formData.append('file', blob, `selected-layer-${i + 1}.${ext}`)
               formData.append('useLocal', useLocalApi.toString())
               formData.append('localUploadUrl', localUploadUrl)
 
@@ -3376,6 +3936,9 @@ export function CanvasEditor() {
       // Check if this is a video service
       const isVideoService = service?.category === "video"
 
+      // Check if this is an audio service
+      const isAudioService = service?.category === "audio"
+
       if (isVideoService) {
         // Handle video result - fetch and create blob URL for seekability
         fetch(`/api/image-proxy?url=${encodeURIComponent(resultUrl)}&local=${useLocalApi}`)
@@ -3701,90 +4264,235 @@ export function CanvasEditor() {
           } : j))
         }
       } else {
-        // Handle image result (existing logic)
-        const img = new window.Image()
-        img.crossOrigin = "anonymous"
-        img.onload = () => {
-          // Use functional update to ensure we have the latest layers state
-          setLayers(currentLayers => {
-            // Find the current input layer by ID to get its current position/size
-            // First try to find it in current layers, then fall back to stored layer data
-            let inputLayer = foundJob?.layerId ? currentLayers.find(l => l.id === foundJob.layerId) : null
-            if (!inputLayer && foundJob?.inputLayer) {
-              // Use stored layer data as fallback if layer was deleted
-              inputLayer = foundJob.inputLayer
+        // Check if this is an audio service result
+        const isAudioResult = resultUrl.toLowerCase().endsWith('.mp3') ||
+                              resultUrl.toLowerCase().endsWith('.wav') ||
+                              resultUrl.toLowerCase().endsWith('.flac') ||
+                              resultUrl.toLowerCase().endsWith('.ogg') ||
+                              resultUrl.toLowerCase().endsWith('.m4a')
+
+        if (isAudioResult) {
+          // Handle audio result
+          fetch(`/api/image-proxy?url=${encodeURIComponent(resultUrl)}&local=${useLocalApi}`)
+            .then(response => {
+              if (!response.ok) throw new Error('Failed to fetch audio')
+              return response.blob()
+            })
+            .then(blob => {
+              const audio = document.createElement('audio')
+              audio.crossOrigin = "anonymous"
+              audio.preload = 'auto'
+              audio.src = URL.createObjectURL(blob)
+
+              // Handle duration updates when metadata loads
+              const handleMetadataLoaded = () => {
+                // Update duration in existing layer if it exists
+                setLayers(currentLayers => {
+                  return currentLayers.map(layer => {
+                    if (layer.type === 'audio' && layer.audio === audio && (!layer.duration || layer.duration !== audio.duration)) {
+                      return { ...layer, duration: audio.duration }
+                    }
+                    return layer
+                  })
+                })
+              }
+
+              audio.addEventListener('loadedmetadata', handleMetadataLoaded)
+              audio.addEventListener('durationchange', handleMetadataLoaded)
+
+              // Handle time updates during playback
+              const handleTimeUpdate = () => {
+                setLayers(currentLayers => {
+                  return currentLayers.map(layerItem => {
+                    if (layerItem.type === 'audio' && layerItem.audio === audio) {
+                      return { ...layerItem, currentTime: audio.currentTime }
+                    }
+                    return layerItem
+                  })
+                })
+              }
+
+              audio.addEventListener('timeupdate', handleTimeUpdate)
+
+              audio.onloadeddata = () => {
+                // Use functional update to ensure we have the latest layers state
+                setLayers(currentLayers => {
+                  // Find the current input layer by ID to get its current position/size
+                  // First try to find it in current layers, then fall back to stored layer data
+                  let inputLayer = foundJob?.layerId ? currentLayers.find(l => l.id === foundJob.layerId) : null
+                  if (!inputLayer && foundJob?.inputLayer) {
+                    // Use stored layer data as fallback if layer was deleted
+                    inputLayer = foundJob.inputLayer
+                  }
+
+                  // Use fixed dimensions for audio layers
+                  const width = 600
+                  const height = 100
+
+                  // Ensure they are divisible by 4
+                  const finalWidth = Math.ceil(width / 4) * 4
+                  const finalHeight = Math.ceil(height / 4) * 4
+
+                  const newLayer: Layer = {
+                    id: `layer-ai-${Date.now()}`,
+                    type: 'audio',
+                    audio: audio,
+                    audioUrl: `/api/image-proxy?url=${encodeURIComponent(resultUrl)}&local=${useLocalApi}`,
+                    currentTime: 0,
+                    duration: audio.duration || 0,
+                    isPlaying: false,
+                    volume: 1,
+                    x: inputLayer ? inputLayer.x : 200,
+                    y: inputLayer ? inputLayer.y : 200,
+                    width: finalWidth,
+                    height: finalHeight,
+                    rotation: 0,
+                    name: layerName,
+                    visible: true,
+                    delayTime: timing?.delayTime,
+                    executionTime: timing?.executionTime,
+                    prompt,
+                    instruction,
+                    resultUrl,
+                    serviceId: service.id,
+                    billing,
+                  }
+
+                  const updatedLayers = [...currentLayers, newLayer]
+                  setSelectedLayerIds([newLayer.id])
+                  saveToHistory(updatedLayers, [newLayer.id])
+
+                  // Force canvas redraw by triggering state update
+                  setForceRedraw(prev => prev + 1)
+
+                  return updatedLayers
+                })
+
+                // Update job status
+                if (jobId) {
+                  setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+                    ...j,
+                    progress: 100,
+                    status: "AI generated audio added to canvas successfully!",
+                    apiStatus: "COMPLETED",
+                    result: { success: true, message: "AI generated audio added to canvas successfully!" },
+                    polling: false
+                  } : j))
+                }
+              }
+
+              audio.onerror = () => {
+                if (jobId) {
+                  setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+                    ...j,
+                    progress: 100,
+                    status: "Failed to load result audio from API",
+                    apiStatus: "FAILED",
+                    result: { error: true, message: "Failed to load result audio from API" },
+                    polling: false
+                  } : j))
+                }
+              }
+            })
+            .catch(error => {
+              console.error('Audio fetch error:', error)
+              if (jobId) {
+                setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+                  ...j,
+                  progress: 100,
+                  status: "Failed to fetch audio from API",
+                  apiStatus: "FAILED",
+                  result: { error: true, message: "Failed to fetch audio from API" },
+                  polling: false
+                } : j))
+              }
+            })
+        } else {
+          // Handle image result (existing logic)
+          const img = new window.Image()
+          img.crossOrigin = "anonymous"
+          img.onload = () => {
+            // Use functional update to ensure we have the latest layers state
+            setLayers(currentLayers => {
+              // Find the current input layer by ID to get its current position/size
+              // First try to find it in current layers, then fall back to stored layer data
+              let inputLayer = foundJob?.layerId ? currentLayers.find(l => l.id === foundJob.layerId) : null
+              if (!inputLayer && foundJob?.inputLayer) {
+                // Use stored layer data as fallback if layer was deleted
+                inputLayer = foundJob.inputLayer
+              }
+
+              // Determine target dimensions based on custom size setting
+              let targetWidth: number, targetHeight: number
+              if (service?.custom_size || service?.upscale_size) {
+                // When custom size is enabled, use the actual result image dimensions
+                targetWidth = img.width
+                targetHeight = img.height
+              } else {
+                targetWidth = inputLayer ? inputLayer.width : img.width
+                targetHeight = inputLayer ? inputLayer.height : img.height
+              }
+
+              const newLayer: Layer = {
+                id: `layer-ai-${Date.now()}`,
+                type: 'image',
+                image: img,
+                x: inputLayer ? inputLayer.x : 200,
+                y: inputLayer ? inputLayer.y : 200,
+                width: targetWidth,
+                height: targetHeight,
+                rotation: 0,
+                name: layerName,
+                visible: true,
+                delayTime: timing?.delayTime,
+                executionTime: timing?.executionTime,
+                prompt,
+                instruction,
+                resultUrl,
+                serviceId: service.id,
+                billing,
+              }
+
+              const updatedLayers = [...currentLayers, newLayer]
+              setSelectedLayerIds([newLayer.id])
+              saveToHistory(updatedLayers, [newLayer.id])
+
+              // Force canvas redraw by triggering state update
+              setForceRedraw(prev => prev + 1)
+
+              // Additional forced redraws as backup
+              setTimeout(() => setForceRedraw(prev => prev + 1), 50)
+              setTimeout(() => setForceRedraw(prev => prev + 1), 150)
+
+              return updatedLayers
+            })
+
+            // Update job status
+            if (jobId) {
+              setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+                ...j,
+                progress: 100,
+                status: "AI edited image added to canvas successfully!",
+                apiStatus: "COMPLETED",
+                result: { success: true, message: "AI edited image added to canvas successfully!" },
+                polling: false
+              } : j))
             }
-
-            // Determine target dimensions based on custom size setting
-            let targetWidth: number, targetHeight: number
-            if (service?.custom_size || service?.upscale_size) {
-              // When custom size is enabled, use the actual result image dimensions
-              targetWidth = img.width
-              targetHeight = img.height
-            } else {
-              targetWidth = inputLayer ? inputLayer.width : img.width
-              targetHeight = inputLayer ? inputLayer.height : img.height
-            }
-
-            const newLayer: Layer = {
-              id: `layer-ai-${Date.now()}`,
-              type: 'image',
-              image: img,
-              x: inputLayer ? inputLayer.x : 200,
-              y: inputLayer ? inputLayer.y : 200,
-              width: targetWidth,
-              height: targetHeight,
-              rotation: 0,
-              name: layerName,
-              visible: true,
-              delayTime: timing?.delayTime,
-              executionTime: timing?.executionTime,
-              prompt,
-              instruction,
-              resultUrl,
-              serviceId: service.id,
-              billing,
-            }
-
-            const updatedLayers = [...currentLayers, newLayer]
-            setSelectedLayerIds([newLayer.id])
-            saveToHistory(updatedLayers, [newLayer.id])
-
-            // Force canvas redraw by triggering state update
-            setForceRedraw(prev => prev + 1)
-
-            // Additional forced redraws as backup
-            setTimeout(() => setForceRedraw(prev => prev + 1), 50)
-            setTimeout(() => setForceRedraw(prev => prev + 1), 150)
-
-            return updatedLayers
-          })
-
-          // Update job status
-          if (jobId) {
-            setServiceJobs(prev => prev.map(j => j.id === jobId ? {
-              ...j,
-              progress: 100,
-              status: "AI edited image added to canvas successfully!",
-              apiStatus: "COMPLETED",
-              result: { success: true, message: "AI edited image added to canvas successfully!" },
-              polling: false
-            } : j))
           }
-        }
-        img.onerror = () => {
-          if (jobId) {
-            setServiceJobs(prev => prev.map(j => j.id === jobId ? {
-              ...j,
-              progress: 100,
-              status: "Failed to load result image from API",
-              apiStatus: "FAILED",
-              result: { error: true, message: "Failed to load result image from API" },
-              polling: false
-            } : j))
+          img.onerror = () => {
+            if (jobId) {
+              setServiceJobs(prev => prev.map(j => j.id === jobId ? {
+                ...j,
+                progress: 100,
+                status: "Failed to load result image from API",
+                apiStatus: "FAILED",
+                result: { error: true, message: "Failed to load result image from API" },
+                polling: false
+              } : j))
+            }
           }
+          img.src = `/api/image-proxy?url=${encodeURIComponent(resultUrl)}&local=${useLocalApi}`
         }
-        img.src = `/api/image-proxy?url=${encodeURIComponent(resultUrl)}&local=${useLocalApi}`
       }
     } catch (error) {
       if (jobId) {
@@ -3989,6 +4697,37 @@ export function CanvasEditor() {
     ))
   }
 
+  // Audio playback functions
+  const playAudio = (layerId: string) => {
+    const layer = layers.find(l => l.id === layerId)
+    if (!layer || layer.type !== 'audio' || !layer.audio) {
+      return
+    }
+
+    layer.audio.play()
+    setPlayingAudios(prev => new Set([...prev, layerId]))
+    setLayers(prev => prev.map(l =>
+      l.id === layerId ? { ...l, isPlaying: true } : l
+    ))
+  }
+
+  const pauseAudio = (layerId: string) => {
+    const layer = layers.find(l => l.id === layerId)
+    if (!layer || layer.type !== 'audio' || !layer.audio) {
+      return
+    }
+
+    layer.audio.pause()
+    setPlayingAudios(prev => {
+      const newSet = new Set(prev)
+      newSet.delete(layerId)
+      return newSet
+    })
+    setLayers(prev => prev.map(l =>
+      l.id === layerId ? { ...l, isPlaying: false } : l
+    ))
+  }
+
   const seekVideo = (layerId: string, time: number) => {
     const layer = layers.find(l => l.id === layerId)
     if (!layer || layer.type !== 'video' || !layer.video) {
@@ -4025,6 +4764,33 @@ export function CanvasEditor() {
     }
   }
 
+  const seekAudio = (layerId: string, time: number) => {
+    const layer = layers.find(l => l.id === layerId)
+    if (!layer || layer.type !== 'audio' || !layer.audio) {
+      return
+    }
+
+    // Ensure the audio is ready and has a valid duration
+    if (!layer.audio.duration || layer.audio.duration === 0 || isNaN(layer.audio.duration)) {
+      console.warn('seekAudio: Audio not ready for seeking:', layerId, 'duration:', layer.audio.duration)
+      return
+    }
+
+    // Clamp the time to valid range
+    const clampedTime = Math.max(0, Math.min(time, layer.audio.duration))
+
+    try {
+      layer.audio.currentTime = clampedTime
+      setLayers(prev => prev.map(l =>
+        l.id === layerId ? { ...l, currentTime: clampedTime } : l
+      ))
+      // Update slider value to match
+      setSliderValues(prev => ({ ...prev, [layerId]: clampedTime }))
+    } catch (error) {
+      console.error('seekAudio: Error seeking audio:', error)
+    }
+  }
+
   // Canvas redraw loop for playing videos - optimized to reduce performance impact
   const startVideoLoop = () => {
     if (animationFrameRef.current) return
@@ -4034,8 +4800,8 @@ export function CanvasEditor() {
     const DRAW_INTERVAL = 33 // Limit canvas redraws to ~30fps to prevent unresponsiveness
 
     const loop = (currentTime: number) => {
-      if (playingVideos.size > 0) {
-        // Throttle canvas redraws to prevent unresponsiveness during video playback
+      if (playingVideos.size > 0 || playingAudios.size > 0) {
+        // Throttle canvas redraws to prevent unresponsiveness during media playback
         if (currentTime - lastDrawTime.current > DRAW_INTERVAL) {
           drawCanvas()
           lastDrawTime.current = currentTime
@@ -4054,6 +4820,17 @@ export function CanvasEditor() {
                 ...layer,
                 currentTime: newCurrentTime,
                 duration: layer.video.duration || layer.duration // Update duration if it has changed
+              }
+            } else if (layer.type === 'audio' && layer.audio && playingAudios.has(layer.id)) {
+              // Don't update currentTime if user is actively seeking
+              const isSeeking = isSeekingRef.current[layer.id]
+              const newCurrentTime = isSeeking ? (layer.currentTime || 0) : (layer.audio.currentTime || 0)
+              // Update slider value to match audio playback
+              setSliderValues(prev => ({ ...prev, [layer.id]: newCurrentTime }))
+              return {
+                ...layer,
+                currentTime: newCurrentTime,
+                duration: layer.audio.duration || layer.duration // Update duration if it has changed
               }
             }
             return layer
@@ -4253,7 +5030,7 @@ export function CanvasEditor() {
             <input
               ref={layerInputRef}
               type="file"
-              accept="image/*,video/*,.glb,.gltf"
+              accept="image/*,video/*,audio/*,.glb,.gltf"
               multiple
               onChange={handleLayerUpload}
               className="hidden"
@@ -4473,7 +5250,7 @@ export function CanvasEditor() {
                                       {param.required && <span className="text-red-500 ml-1">*</span>}
                                     </Label>
 
-                                    {param.type === 'string' && (param.name.includes('prompt') || param.name.includes('instruction') || param.name.includes('text')) ? (
+                                    {param.type === 'string' && (param.name.includes('prompt') || param.name.includes('instruction') || param.name.includes('text') || param.name.includes('lyric')) ? (
                                       <Textarea
                                         id={`service-${selectedServiceId}-${param.name}`}
                                         value={paramValue}
@@ -4652,6 +5429,44 @@ export function CanvasEditor() {
                                             Set Selected Layer as {param.name.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
                                           </Button>
                                         )}
+                                        {param.name.startsWith('input_audio') && primarySelectedLayer && primarySelectedLayer.type === 'audio' && (
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={async () => {
+                                              if (!primarySelectedLayer || primarySelectedLayer.type !== 'audio') return
+
+                                              try {
+                                                const response = await fetch(primarySelectedLayer.audioUrl!)
+                                                const blob = await response.blob()
+
+                                                const formData = new FormData()
+                                                formData.append('file', blob, `selected-audio-${Date.now()}.mp3`)
+
+                                                const uploadResponse = await fetch('/api/upload', {
+                                                  method: 'POST',
+                                                  body: formData,
+                                                })
+
+                                                if (uploadResponse.ok) {
+                                                  const uploadResult = await uploadResponse.json()
+                                                  const audioUrl = uploadResult.url
+
+                                                  setAiServices(prev => prev.map(s =>
+                                                    s.id === selectedServiceId
+                                                      ? { ...s, [param.name]: audioUrl }
+                                                      : s
+                                                  ))
+                                                }
+                                              } catch (error) {
+                                                console.error('Failed to upload selected audio:', error)
+                                              }
+                                            }}
+                                            className="text-xs h-6 w-full"
+                                          >
+                                            Set Selected Layer as {param.name.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                                          </Button>
+                                        )}
                                       </div>
                                     ) : (
                                       <Input
@@ -4699,16 +5514,48 @@ export function CanvasEditor() {
                     const inputImageParam = selectedService.parameters.find((p: any) => p.name === 'input_image' && p.ui === false)
                     const inputImage1Param = selectedService.parameters.find((p: any) => p.name === 'input_image1' && p.ui === false)
                     const inputImage2Param = selectedService.parameters.find((p: any) => p.name === 'input_image2' && p.ui === false)
+                    const inputImage3Param = selectedService.parameters.find((p: any) => p.name === 'input_image3' && p.ui === false)
                     const inputImageCheckParam = selectedService.parameters.find((p: any) => p.name === 'input_image_check' && p.ui === false)
                     const startImageParam = selectedService.parameters.find((p: any) => p.name === 'start_image' && p.ui === false)
                     const endImageParam = selectedService.parameters.find((p: any) => p.name === 'end_image' && p.ui === false)
+                    const inputAudioParam = selectedService.parameters.find((p: any) => p.name === 'input_audio' && p.ui === false)
 
-                    if ((inputImage1Param && inputImage2Param) || (startImageParam && endImageParam)) {
-                      // Service requires 2 layers
+                    if (inputAudioParam) {
+                      // Service requires 1 audio layer
+                      if (!primarySelectedLayer || primarySelectedLayer.type !== 'audio') {
+                        return (
+                          <div className="text-xs text-green-600 text-center mb-3">
+                            1 audio layer required for this service
+                          </div>
+                        )
+                      }
+                    } else if (inputImage1Param && inputImage2Param && inputImage3Param) {
+                      // Service requires 3 image/video layers
+                      if (selectedLayers.length !== 3) {
+                        return (
+                          <div className="text-xs text-green-600 text-center mb-3">
+                            3 image/video layers required for this service<br/>(hold Ctrl to select multiple layers)
+                          </div>
+                        )
+                      } else if (!selectedLayers.every(layer => layer.type === 'image' || layer.type === 'video')) {
+                        return (
+                          <div className="text-xs text-green-600 text-center mb-3">
+                            All selected layers must be image or video layers for this service
+                          </div>
+                        )
+                      }
+                    } else if ((inputImage1Param && inputImage2Param) || (startImageParam && endImageParam)) {
+                      // Service requires 2 image/video layers
                       if (selectedLayers.length !== 2) {
                         return (
                           <div className="text-xs text-green-600 text-center mb-3">
-                            2 layers required for this service<br/>(hold Ctrl to select multiple layers)
+                            2 image/video layers required for this service<br/>(hold Ctrl to select multiple layers)
+                          </div>
+                        )
+                      } else if (!selectedLayers.every(layer => layer.type === 'image' || layer.type === 'video')) {
+                        return (
+                          <div className="text-xs text-green-600 text-center mb-3">
+                            All selected layers must be image or video layers for this service
                           </div>
                         )
                       }
@@ -4718,6 +5565,12 @@ export function CanvasEditor() {
                         return (
                           <div className="text-xs text-green-600 text-center mb-3">
                             1 layer required for this service
+                          </div>
+                        )
+                      } else if ((inputImageParam || inputImage1Param || inputImageCheckParam || inputTypes) && primarySelectedLayer.type !== 'image' && primarySelectedLayer.type !== 'video') {
+                        return (
+                          <div className="text-xs text-green-600 text-center mb-3">
+                            Selected layer must be an image or video layer for this service
                           </div>
                         )
                       }
@@ -4737,18 +5590,31 @@ export function CanvasEditor() {
                       const selectedService = aiServices.find(s => s.id === selectedServiceId)
                       if (!selectedService || !selectedService.parameters) return true
 
-                      // Check if service has input_image1 and input_image2 or start_image and end_image with ui: false
+                      // Check if service has input parameters with ui: false
+                      const inputTypes = selectedService.inputTypes.includes("text")
+                      const inputImageParam = selectedService.parameters.find((p: any) => p.name === 'input_image' && p.ui === false)
                       const inputImage1Param = selectedService.parameters.find((p: any) => p.name === 'input_image1' && p.ui === false)
                       const inputImage2Param = selectedService.parameters.find((p: any) => p.name === 'input_image2' && p.ui === false)
+                      const inputImage3Param = selectedService.parameters.find((p: any) => p.name === 'input_image3' && p.ui === false)
+                      const inputImageCheckParam = selectedService.parameters.find((p: any) => p.name === 'input_image_check' && p.ui === false)
                       const startImageParam = selectedService.parameters.find((p: any) => p.name === 'start_image' && p.ui === false)
                       const endImageParam = selectedService.parameters.find((p: any) => p.name === 'end_image' && p.ui === false)
-
-                      // For services requiring 2 input images, need exactly 2 selected layers
-                      if ((inputImage1Param && inputImage2Param) || (startImageParam && endImageParam)) {
-                        if (selectedLayers.length !== 2) return true
+                      const inputAudioParam = selectedService.parameters.find((p: any) => p.name === 'input_audio' && p.ui === false)
+                  
+                      // For services requiring audio input, need 1 audio layer
+                      if (inputAudioParam) {
+                        if (!primarySelectedLayer || primarySelectedLayer.type !== 'audio') return true
+                      } else if (inputImage1Param && inputImage2Param && inputImage3Param) {
+                        if (selectedLayers.length !== 3 || !selectedLayers.every(layer => layer.type === 'image' || layer.type === 'video')) return true
+                      } else if ((inputImage1Param && inputImage2Param) || (startImageParam && endImageParam)) {
+                        if (selectedLayers.length !== 2 || !selectedLayers.every(layer => layer.type === 'image' || layer.type === 'video')) return true
                       } else {
                         // For other services, need at least one selected layer
                         if (!primarySelectedLayer) return true
+                        // If service has image input parameters, require image or video layer
+                        if (inputImageParam || inputImage1Param || inputImageCheckParam || inputTypes) {
+                          if (primarySelectedLayer.type !== 'image' && primarySelectedLayer.type !== 'video') return true
+                        }
                       }
 
                       // Check UI parameters
@@ -4989,6 +5855,40 @@ export function CanvasEditor() {
                     onDragStart={(e) => e.preventDefault()}
                   />
                 ))}
+              </div>
+            )
+          })}
+          {/* Audio Waveform Overlays */}
+          {layers.filter(layer => layer.type === 'audio' && layer.visible).map(layer => {
+            const left = pan.x + layer.x * zoom
+            const top = pan.y + layer.y * zoom
+            const width = layer.width * zoom
+            const height = layer.height * zoom
+
+            return (
+              <div
+                key={`waveform-${layer.id}`}
+                style={{
+                  position: 'absolute',
+                  left: `${left}px`,
+                  top: `${top}px`,
+                  width: `${width}px`,
+                  height: `${height}px`,
+                  transform: `rotate(${layer.rotation}deg)`,
+                  transformOrigin: 'center',
+                  pointerEvents: 'none',
+                  zIndex: 1,
+                }}
+              >
+                <WaveformOverlay
+                  audioUrl={layer.audioUrl || ''}
+                  width={width}
+                  height={height}
+                  layerId={layer.id}
+                  currentTime={layer.currentTime || 0}
+                  duration={layer.duration || 0}
+                  onSeek={(time) => seekAudio(layer.id, time)}
+                />
               </div>
             )
           })}
@@ -5370,8 +6270,8 @@ export function CanvasEditor() {
                               : [...selectedLayerIds, layer.id])
                             : [layer.id]
                           const selectedLayers = layers.filter(l => updatedSelectedIds.includes(l.id))
-                          const hasVideoLayer = selectedLayers.length > 0 && selectedLayers.some(l => l.type === 'video')
-                          setShowTimelinePanel(hasVideoLayer)
+                          const hasMediaLayer = selectedLayers.length > 0 && selectedLayers.some(l => l.type === 'video' || l.type === 'audio')
+                          setShowTimelinePanel(hasMediaLayer)
                         }}
                         className={cn(
                           "group flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors",
@@ -5389,12 +6289,16 @@ export function CanvasEditor() {
                               className="w-full h-full object-cover"
                             />
                           ) : layer.type === 'text' ? (
-                            <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-white text-black">
+                            <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-background text-foreground">
                               T
                             </div>
                           ) : layer.type === 'video' ? (
                             <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-black text-white">
                               <Video className="w-4 h-4" />
+                            </div>
+                          ) : layer.type === 'audio' ? (
+                            <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-purple-100 text-purple-800">
+                              <AudioWaveform className="w-4 h-4" />
                             </div>
                           ) : layer.type === 'glb' ? (
                             <div className="w-full h-full flex items-center justify-center text-xs font-medium bg-blue-100 text-blue-800">
@@ -5756,16 +6660,20 @@ export function CanvasEditor() {
       </div>
 
       {/* Timeline Panel */}
-      {selectedLayers.some(layer => layer.type === 'video') && showTimelinePanel && (
+      {selectedLayers.some(layer => layer.type === 'video' || layer.type === 'audio') && showTimelinePanel && (
         <div className="h-32 border-t border-border bg-card flex flex-col">
           <div className="flex-1 p-4 overflow-y-auto">
             <div className="space-y-4">
-              {selectedLayers.filter(layer => layer.type === 'video').map((videoLayer) => (
-                <div key={videoLayer.id} className="space-y-2 p-3 bg-muted/50 rounded">
+              {selectedLayers.filter(layer => layer.type === 'video' || layer.type === 'audio').map((mediaLayer) => (
+                <div key={mediaLayer.id} className="space-y-2 p-3 bg-muted/50 rounded">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Video className="w-4 h-4" />
-                      <span className="text-sm font-medium">{videoLayer.name}</span>
+                      {mediaLayer.type === 'video' ? (
+                        <Video className="w-4 h-4" />
+                      ) : (
+                        <AudioWaveform className="w-4 h-4" />
+                      )}
+                      <span className="text-sm font-medium">{mediaLayer.name}</span>
                     </div>
                     <Button
                       variant="ghost"
@@ -5781,21 +6689,41 @@ export function CanvasEditor() {
                       variant="outline"
                       size="sm"
                       onMouseDown={() => {
-                        playVideo(videoLayer.id)
+                        if (mediaLayer.type === 'video') {
+                          playVideo(mediaLayer.id)
+                        } else {
+                          playAudio(mediaLayer.id)
+                        }
                       }}
                       onMouseUp={() => {
-                        pauseVideo(videoLayer.id)
+                        if (mediaLayer.type === 'video') {
+                          pauseVideo(mediaLayer.id)
+                        } else {
+                          pauseAudio(mediaLayer.id)
+                        }
                       }}
                       onMouseLeave={() => {
-                        pauseVideo(videoLayer.id)
+                        if (mediaLayer.type === 'video') {
+                          pauseVideo(mediaLayer.id)
+                        } else {
+                          pauseAudio(mediaLayer.id)
+                        }
                       }}
                       onTouchStart={(e) => {
                         e.preventDefault()
-                        playVideo(videoLayer.id)
+                        if (mediaLayer.type === 'video') {
+                          playVideo(mediaLayer.id)
+                        } else {
+                          playAudio(mediaLayer.id)
+                        }
                       }}
                       onTouchEnd={(e) => {
                         e.preventDefault()
-                        pauseVideo(videoLayer.id)
+                        if (mediaLayer.type === 'video') {
+                          pauseVideo(mediaLayer.id)
+                        } else {
+                          pauseAudio(mediaLayer.id)
+                        }
                       }}
                     >
                       <Play className="w-4 h-4 mr-2" />
@@ -5803,17 +6731,21 @@ export function CanvasEditor() {
                     </Button>
                     <div className="flex-1">
                       <Slider
-                        value={[sliderValues[videoLayer.id] ?? (videoLayer.currentTime || 0)]}
-                        max={videoLayer.duration && videoLayer.duration > 0 ? videoLayer.duration : 100}
+                        value={[sliderValues[mediaLayer.id] ?? (mediaLayer.currentTime || 0)]}
+                        max={mediaLayer.duration && mediaLayer.duration > 0 ? mediaLayer.duration : 100}
                         step={0.1}
-                        disabled={!videoLayer.duration || videoLayer.duration === 0}
+                        disabled={!mediaLayer.duration || mediaLayer.duration === 0}
                         onValueChange={(value) => {
-                          setSliderValues(prev => ({ ...prev, [videoLayer.id]: value[0] }))
-                          seekVideo(videoLayer.id, value[0])
+                          setSliderValues(prev => ({ ...prev, [mediaLayer.id]: value[0] }))
+                          if (mediaLayer.type === 'video') {
+                            seekVideo(mediaLayer.id, value[0])
+                          } else {
+                            seekAudio(mediaLayer.id, value[0])
+                          }
                         }}
                         onValueCommit={(value) => {
-                          // Update the slider value to match the video's current time after seeking
-                          setSliderValues(prev => ({ ...prev, [videoLayer.id]: videoLayer.currentTime || 0 }))
+                          // Update the slider value to match the media's current time after seeking
+                          setSliderValues(prev => ({ ...prev, [mediaLayer.id]: mediaLayer.currentTime || 0 }))
                         }}
                         onTouchStart={(e) => {
                           e.stopPropagation()
@@ -5827,8 +6759,28 @@ export function CanvasEditor() {
                         className="w-full"
                       />
                     </div>
+                    {mediaLayer.type === 'audio' && mediaLayer.audio && (
+                      <div className="flex items-center gap-1 w-20">
+                        <Volume2 className="w-3 h-3 text-muted-foreground" />
+                        <Slider
+                          value={[(mediaLayer.volume || 1) * 100]}
+                          max={100}
+                          step={1}
+                          onValueChange={(value) => {
+                            const newVolume = value[0] / 100
+                            if (mediaLayer.audio) {
+                              mediaLayer.audio.volume = newVolume
+                            }
+                            setLayers(prev => prev.map(l =>
+                              l.id === mediaLayer.id ? { ...l, volume: newVolume } : l
+                            ))
+                          }}
+                          className="flex-1"
+                        />
+                      </div>
+                    )}
                     <span className="text-xs text-muted-foreground w-16 text-right">
-                      {Math.floor((videoLayer.currentTime || 0) / 60)}:{Math.floor((videoLayer.currentTime || 0) % 60).toString().padStart(2, '0')} / {Math.floor((videoLayer.duration || 0) / 60)}:{Math.floor((videoLayer.duration || 0) % 60).toString().padStart(2, '0')}
+                      {Math.floor((mediaLayer.currentTime || 0) / 60)}:{Math.floor((mediaLayer.currentTime || 0) % 60).toString().padStart(2, '0')} / {Math.floor((mediaLayer.duration || 0) / 60)}:{Math.floor((mediaLayer.duration || 0) % 60).toString().padStart(2, '0')}
                     </span>
                   </div>
                 </div>
@@ -5885,6 +6837,7 @@ export function CanvasEditor() {
                         category.id === "image" ? ImageIcon :
                         category.id === "video" ? Video :
                         category.id === "3d" ? Box :
+                        category.id === "audio" ? AudioWaveform :
                         MessageSquare
                       return (
                         <Button
@@ -5913,12 +6866,12 @@ export function CanvasEditor() {
                       >
                         <CardContent className="p-4">
                           <div className="flex items-start gap-3">
-                            <div className={`p-2 rounded-lg ${getCategoryColor(service.category)} flex-shrink-0`}>
-                              {(() => {
+                          <div className={`p-2 rounded-lg ${getCategoryColor(service.category)} flex-shrink-0`}>
+                            {(() => {
                                 const IconComponent = getServiceIconComponent(service.icon)
-                                return <IconComponent className="h-4 w-4" />
-                              })()}
-                            </div>
+                              return <IconComponent className="h-4 w-4" />
+                            })()}
+                          </div>
                             <div className="flex-1 min-w-0">
                               <h4 className="font-medium text-sm mb-1">{service.name}</h4>
                               <p className="text-xs text-muted-foreground line-clamp-2">{service.description}</p>
