@@ -13,7 +13,7 @@
 
 | Local | Pod | Serverless | Info 
 | --- | --- | --- | --- |
-[![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/TostUI#-tostui---song-generation-v15-beta) | | | TostUI - Song Generation (v1.5-beta - Min 28GB VRAM)
+[![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/TostUI#-tostui---song-generation-v15-beta) | | | TostUI - Song Generation (v1.5-beta - Min 24GB VRAM)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/TostUI#-tostui---song-generation-base-new) | | | TostUI - Song Generation (base-new - Min 14GB VRAM)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/TostUI#-tostui---flux2-dev-8bit) | | | TostUI - Flux.2 [dev] (8bit)
 [![local](https://github.com/user-attachments/assets/2b9a6ec2-e6cd-4415-9553-6c7bfb5e7722)](https://github.com/camenduru/TostUI#-tostui---qwen-image-edit-2511-8bit) | [![pod](https://github.com/user-attachments/assets/b1afe627-76ad-42fd-baaa-59be2259b224)](https://console.runpod.io/deploy?template=8225iajw8i&ref=iqi9iy8y) | | TostUI - Qwen Image Edit 2511 (8bit)
@@ -48,7 +48,7 @@
     docker run --gpus all -p 3000:3000 --name tostui-songgeneration-v1.5 camenduru/tostui-songgeneration:v1.5
     ```
 
-    *Requires NVIDIA GPU (Min 28GB VRAM)*
+    *Requires NVIDIA GPU (Min 24GB VRAM)*
 
 4.  **Open app**\
     Go to: http://localhost:3000
