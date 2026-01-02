@@ -39,13 +39,13 @@
 2.  **Update the container (optional)**
 
     ``` bash
-    docker stop tostui-songgeneration:v1.5; docker rm tostui-songgeneration:v1.5; docker pull camenduru/tostui-songgeneration:v1.5
+    docker stop tostui-songgeneration-v1.5; docker rm tostui-songgeneration-v1.5; docker pull camenduru/tostui-songgeneration:v1.5
     ```
 
 3.  **Run the container**
 
     ``` bash
-    docker run --gpus all -p 3000:3000 --name tostui-songgeneration:v1.5 camenduru/tostui-songgeneration:v1.5
+    docker run --gpus all -p 3000:3000 --name tostui-songgeneration-v1.5 camenduru/tostui-songgeneration:v1.5
     ```
 
     *Requires NVIDIA GPU (Min 28GB VRAM)*
